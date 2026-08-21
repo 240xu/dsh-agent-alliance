@@ -1,0 +1,6 @@
+{"type":"system","subtype":"init","session_id":"9a1b2c3d-1111-2222-3333-444455556666","model":"claude-x"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"你好"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash"}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","content":"ok"}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"，世界！"}]}}
+{"type":"result","subtype":"success","is_error":false,"result":"你好，世界！","session_id":"9a1b2c3d-1111-2222-3333-444455556666"}

@@ -1,0 +1,4 @@
+{"type":"session","sessionID":"ses_abc123"}
+{"type":"message","part":{"type":"step-start"}}
+{"type":"message","part":{"type":"text","text":"OpenCode 回答第一段"}}
+{"type":"message","part":{"type":"text","text":"第二段"}}
