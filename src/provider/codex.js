@@ -152,6 +152,40 @@ export function makeCodexProvider({ deps = {} } = {}) {
     throw new Error('codex session not found: ' + id)
   }
 
+  // 完整导出（导入器用）
+  async function exportSession(id) {
+    for (const file of rolloutFiles(paths.sessionsRoot)) {
+      const objs = headObjs(file)
+      if (metaOf(objs).id !== id) continue
+      let raw
+      try { raw = readFileSync(file, 'utf8') } catch { break }
+      const all = raw.split('\n').filter(Boolean).map(l => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean)
+      let createdAt = null
+      const meta = metaOf(all)
+      if (meta.timestamp) createdAt = Date.parse(meta.timestamp)
+      const turns = []
+      let cur = null
+      for (const o of all) {
+        const p = o.payload || {}
+        if (o.type !== 'response_item' || p.type !== 'message') continue
+        const text = Array.isArray(p.content)
+          ? p.content.filter(b => typeof b?.text === 'string').map(b => b.text).join('\n')
+          : ''
+        if (!text.trim()) continue
+        if (p.role === 'user') {
+          if (text.trimStart().startsWith('<')) continue // 注入跳过
+          cur = { user: text, assistant: undefined, tools: [] }
+          turns.push(cur)
+        } else if (p.role === 'assistant') {
+          if (!cur) { cur = { user: '(无前导用户消息)', assistant: undefined, tools: [] }; turns.push(cur) }
+          cur.assistant = (cur.assistant ? cur.assistant + '\n' : '') + text
+        }
+      }
+      return { title: firstUserText(all), createdAt, cwd: meta.cwd, turns }
+    }
+    throw new Error('codex session not found: ' + id)
+  }
+
   return defineProvider({
     id: 'codex',
     label: 'Codex CLI',
@@ -159,5 +193,6 @@ export function makeCodexProvider({ deps = {} } = {}) {
     dispatch,
     listSessions,
     readSession,
+    exportSession,
   })
 }

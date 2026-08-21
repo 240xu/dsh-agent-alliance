@@ -58,3 +58,23 @@ test('listSessions/readSession：按已验证 schema 查询 db.sqlite（内存�
   const s = await p.readSession('zc_1')
   assert.equal(s.messages[0].text, 'zcode 首问')
 })
+
+
+test('exportSession：zcode db 完整导出', async () => {
+  const db = new DatabaseSync(':memory:')
+  db.exec('CREATE TABLE session (id TEXT PRIMARY KEY, directory TEXT, title TEXT, time_created INTEGER)')
+  db.exec('CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT)')
+  db.exec('CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, data TEXT)')
+  db.prepare('INSERT INTO session VALUES (?,?,?,?)').run('zc_e', '/w', 'zc 导出', 1700000000000)
+  db.prepare('INSERT INTO message VALUES (?,?,?,?)').run('zm1', 'zc_e', 1, JSON.stringify({ role: 'user' }))
+  db.prepare('INSERT INTO part VALUES (?,?,?,?,?)').run('zp1', 'zm1', 'zc_e', 2, JSON.stringify({ type: 'text', text: 'zc 问' }))
+  db.prepare('INSERT INTO message VALUES (?,?,?,?)').run('zm2', 'zc_e', 3, JSON.stringify({ role: 'assistant' }))
+  db.prepare('INSERT INTO part VALUES (?,?,?,?,?)').run('zp2', 'zm2', 'zc_e', 4, JSON.stringify({ type: 'compaction', summary: { body: '压缩摘要' } }))
+  db.prepare('INSERT INTO part VALUES (?,?,?,?,?)').run('zp3', 'zm2', 'zc_e', 5, JSON.stringify({ type: 'text', text: 'zc 答' }))
+  const p = makeZcodeProvider({ config: { enabled: true }, openDb: () => db })
+  const s = await p.exportSession('zc_e')
+  assert.equal(s.title, 'zc 导出')
+  assert.equal(s.turns.length, 1)
+  assert.equal(s.turns[0].user, 'zc 问')
+  assert.equal(s.turns[0].assistant, 'zc 答')
+})

@@ -59,3 +59,27 @@ test('listSessions/readSession：内存库查询', async () => {
   assert.deepEqual(s.messages.map(m => m.role), ['user', 'assistant'])
   assert.equal(s.messages[0].text, '帮我做个看板')
 })
+
+
+test('exportSession：db 完整导出多轮', async () => {
+  const db = new DatabaseSync(':memory:')
+  db.exec('CREATE TABLE session (id TEXT PRIMARY KEY, directory TEXT, title TEXT, time_created INTEGER, time_updated INTEGER)')
+  db.exec('CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT)')
+  db.exec('CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, data TEXT)')
+  db.prepare('INSERT INTO session VALUES (?,?,?,?,?)').run('ses_e', '/w', '导出测试', 1700000000000, 1700000900000)
+  // 轮1
+  db.prepare('INSERT INTO message VALUES (?,?,?,?)').run('m1', 'ses_e', 1, JSON.stringify({ role: 'user' }))
+  db.prepare('INSERT INTO part VALUES (?,?,?,?,?)').run('p1', 'm1', 'ses_e', 2, JSON.stringify({ type: 'text', text: '问E1' }))
+  db.prepare('INSERT INTO message VALUES (?,?,?,?)').run('m2', 'ses_e', 3, JSON.stringify({ role: 'assistant' }))
+  db.prepare('INSERT INTO part VALUES (?,?,?,?,?)').run('p2', 'm2', 'ses_e', 4, JSON.stringify({ type: 'text', text: '答E1' }))
+  // 轮2
+  db.prepare('INSERT INTO message VALUES (?,?,?,?)').run('m3', 'ses_e', 5, JSON.stringify({ role: 'user' }))
+  db.prepare('INSERT INTO part VALUES (?,?,?,?,?)').run('p3', 'm3', 'ses_e', 6, JSON.stringify({ type: 'text', text: '问E2' }))
+  const p = makeOpencodeProvider({ deps: { paths: { opencodeBin: BIN }, openDb: () => db } })
+  const s = await p.exportSession('ses_e')
+  assert.equal(s.title, '导出测试')
+  assert.equal(s.turns.length, 2)
+  assert.equal(s.turns[0].user, '问E1')
+  assert.equal(s.turns[0].assistant, '答E1')
+  assert.equal(s.turns[1].user, '问E2')
+})

@@ -65,3 +65,23 @@ test('标题抽取跳过注入类首条（environment_context 等）', async () 
   const list = await p.listSessions({})
   assert.equal(list[0].title, '真正的问题标题')
 })
+
+
+test('exportSession：rollout 完整导出', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aa-cx3-'))
+  const day = path.join(root, '2026', '08', '21')
+  fs.mkdirSync(day, { recursive: true })
+  const L = (o) => JSON.stringify(o)
+  fs.writeFileSync(path.join(day, 'rollout-y.jsonl'), [
+    L({ type: 'session_meta', payload: { id: 'y1', cwd: '/w', timestamp: '2026-08-21T08:00:00Z' } }),
+    L({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '<environment_context>x</environment_context>' }] } }),
+    L({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '问Y' }] } }),
+    L({ type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '答Y' }] } }),
+  ].join('\n'))
+  const p = makeCodexProvider({ deps: { paths: { sessionsRoot: root, codexJs: '/c' } } })
+  const s = await p.exportSession('y1')
+  assert.equal(s.createdAt, Date.parse('2026-08-21T08:00:00Z'))
+  assert.equal(s.turns.length, 1)
+  assert.equal(s.turns[0].user, '问Y')
+  assert.equal(s.turns[0].assistant, '答Y')
+})

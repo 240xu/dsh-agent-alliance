@@ -120,6 +120,34 @@ export function makeZcodeProvider({ deps = {}, config = {}, openDb } = {}) {
     return { title: sess.title ?? undefined, messages: capped }
   }
 
+  // 完整导出（导入器用）；compaction part 跳过
+  async function exportSession(id) {
+    const d = await db()
+    const sess = d.prepare('SELECT id, title, directory, time_created FROM session WHERE id = ?').get(id)
+    if (!sess) throw new Error('zcode session not found: ' + id)
+    const rows = d.prepare(
+      `SELECT m.data AS mdata, p.data AS pdata
+       FROM part p JOIN message m ON m.id = p.message_id
+       WHERE p.session_id = ? ORDER BY p.time_created ASC`
+    ).all(id)
+    const turns = []
+    let cur = null
+    for (const row of rows) {
+      let pdata, mdata
+      try { pdata = JSON.parse(row.pdata); mdata = JSON.parse(row.mdata || '{}') } catch { continue }
+      if (pdata?.type === 'compaction') continue
+      if (pdata?.type !== 'text' || typeof pdata.text !== 'string' || !pdata.text.trim()) continue
+      if (mdata.role === 'assistant') {
+        if (!cur) { cur = { user: undefined, assistant: undefined, tools: [] }; turns.push(cur) }
+        cur.assistant = (cur.assistant ? cur.assistant + '\n' : '') + pdata.text
+      } else {
+        cur = { user: pdata.text, assistant: undefined, tools: [] }
+        turns.push(cur)
+      }
+    }
+    return { title: sess.title ?? undefined, createdAt: sess.time_created ?? null, cwd: sess.directory ?? undefined, turns }
+  }
+
   return defineProvider({
     id: 'zcode',
     label: 'ZCode (z.ai)',
@@ -127,5 +155,6 @@ export function makeZcodeProvider({ deps = {}, config = {}, openDb } = {}) {
     dispatch,
     listSessions,
     readSession,
+    exportSession,
   })
 }
