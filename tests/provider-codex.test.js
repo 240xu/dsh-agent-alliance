@@ -51,3 +51,17 @@ test('listSessions/readSession：扫描 rollout 文件（fixture 目录）', asy
   assert.equal(s.messages[0].role, 'user')
   assert.equal(s.messages[0].text, 'codex 首问标题')
 })
+
+
+test('标题抽取跳过注入类首条（environment_context 等）', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aa-codex2-'))
+  const day = path.join(root, '2026', '08', '21')
+  fs.mkdirSync(day, { recursive: true })
+  fs.writeFileSync(path.join(day, 'rollout-x.jsonl'),
+    JSON.stringify({ type: 'session_meta', payload: { id: 'x1', cwd: '/x' } }) + '\n' +
+    JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '<environment_context>\n<cwd>/x</cwd>' }] } }) + '\n' +
+    JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '真正的问题标题' }] } }))
+  const p = makeCodexProvider({ deps: { paths: { sessionsRoot: root, codexJs: '/c' } } })
+  const list = await p.listSessions({})
+  assert.equal(list[0].title, '真正的问题标题')
+})

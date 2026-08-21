@@ -62,17 +62,20 @@ export function makeClaudeProvider({ deps = {} } = {}) {
     for (const o of lineObjs) {
       if (o.type === 'user') {
         const c = o.message?.content
-        if (typeof c === 'string') return c.slice(0, 120)
-        if (Array.isArray(c)) {
+        let text
+        if (typeof c === 'string') text = c
+        else if (Array.isArray(c)) {
           const t = c.find(b => b?.type === 'text' && b.text)
-          if (t) return t.text.slice(0, 120)
+          if (t) text = t.text
         }
+        // 跳过注入类内容（<local-command-caveat>、<system-reminder> 等尖括号开头）
+        if (text && !text.trimStart().startsWith('<')) return text.slice(0, 120)
       }
     }
     return undefined
   }
 
-  function headLines(file, bytes = 8192) {
+  function headLines(file, bytes = 32768) {
     let buf
     try { buf = readFileSync(file) } catch { return [] }
     const head = buf.subarray(0, bytes).toString('utf8')

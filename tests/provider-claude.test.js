@@ -80,3 +80,16 @@ test('readSession：按 id 找文件并抽取 user/assistant 文本', async () =
   assert.equal(s.messages[0].text, '问1')
   assert.equal(s.messages[1].text, '答1')
 })
+
+
+test('claude 标题跳过 local-command 注入行', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aa-claude2-'))
+  const proj = path.join(root, '-p')
+  fs.mkdirSync(proj)
+  fs.writeFileSync(path.join(proj, 'ddd.jsonl'),
+    JSON.stringify({ type: 'user', message: { content: [{ type: 'text', text: '<local-command-caveat>caveat</local-command-caveat>' }] } }) + '\n' +
+    JSON.stringify({ type: 'user', message: { content: [{ type: 'text', text: '真实提问' }] } }))
+  const p = makeClaudeProvider({ deps: { paths: { grun: '/g', claudeBin: '/b', projectsRoot: root } } })
+  const list = await p.listSessions({})
+  assert.equal(list.find(s => s.id === 'ddd').title, '真实提问')
+})

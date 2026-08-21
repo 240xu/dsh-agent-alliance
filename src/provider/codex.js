@@ -73,7 +73,7 @@ export function makeCodexProvider({ deps = {} } = {}) {
     }
   }
 
-  function headObjs(file, bytes = 16384) {
+  function headObjs(file, bytes = 65536) {
     try {
       const head = readFileSync(file).subarray(0, bytes).toString('utf8')
       return head.split('\n').filter(Boolean).map(l => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean)
@@ -95,7 +95,8 @@ export function makeCodexProvider({ deps = {} } = {}) {
       const p = o.payload || {}
       if ((o.type === 'response_item' || p.type === 'message') && p.role === 'user' && Array.isArray(p.content)) {
         const t = p.content.find(b => b?.type === 'input_text' && b.text)
-        if (t) return t.text.slice(0, 120)
+        // 跳过注入类首条（<environment_context>、<skills_instructions> 等尖括号开头）
+        if (t && !t.text.trimStart().startsWith('<')) return t.text.slice(0, 120)
       }
     }
     return undefined
