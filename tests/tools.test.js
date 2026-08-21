@@ -120,3 +120,31 @@ test('sessions 与 session_read 透传', async () => {
   const r = await rTool.execute({ provider: 'fake', sessionId: 's1' }, {})
   assert.equal(r.messages[0].text, 'q-s1')
 })
+
+
+test('输出必须是无损 JSON（undefined 字段被剔除）', async () => {
+  const messy = {
+    ...fakeProvider,
+    listSessions: async () => [{ id: 's1', title: undefined, cwd: undefined, createdAt: null, messageCount: null }],
+    readSession: async () => ({ title: undefined, messages: [{ role: 'user', text: 'x' }] }),
+  }
+  const { ctx, registered } = mockCtx()
+  registerTools(ctx, { registry: createRegistry([messy]), config })
+  const sTool = registered.find(x => x.name === 'agent_sessions')
+  const rTool = registered.find(x => x.name === 'agent_session_read')
+  const s = await sTool.execute({ provider: 'fake' }, {})
+  // JSON.stringify 会把 undefined 属性直接丢掉——能无损往返即合法
+  assert.deepEqual(s, JSON.parse(JSON.stringify(s)))
+  assert.ok(!('title' in s.sessions[0]))
+  const r = await rTool.execute({ provider: 'fake', sessionId: 's1' }, {})
+  assert.deepEqual(r, JSON.parse(JSON.stringify(r)))
+})
+
+test('dispatch 前台输出同样无损（externalSessionId 为 null 而非 undefined）', async () => {
+  const noSid = { ...fakeProvider, dispatch: async () => ({ text: 't' }) } // 无 externalSessionId
+  const { ctx, registered } = mockCtx()
+  registerTools(ctx, { registry: createRegistry([noSid]), config })
+  const tool = registered.find(x => x.name === 'agent_dispatch')
+  const out = await tool.execute({ provider: 'fake', prompt: 'p' }, { signal: new AbortController().signal })
+  assert.deepEqual(out, JSON.parse(JSON.stringify(out)))
+})

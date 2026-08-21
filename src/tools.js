@@ -5,6 +5,11 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { runRoundtable, formatRoundtableText } from './roundtable.js'
 
+// 宿主要求工具输出为无损 JSON：剔除 undefined / 函数等非法值
+function lossless(value) {
+  return JSON.parse(JSON.stringify(value ?? null))
+}
+
 function labelOf(prompt) {
   const s = String(prompt || '').replace(/\s+/g, ' ').trim()
   return s.length > 60 ? s.slice(0, 60) + '…' : s
@@ -88,12 +93,12 @@ export function registerTools(ctx, { registry, config }) {
         timeoutMs: Math.min(Number(args.timeoutMs) || defaultTimeout, defaultTimeout * 4),
         signal,
       })
-      return {
+      return lossless({
         provider: provider.id,
         text: out.text,
         externalSessionId: out.externalSessionId ?? null,
         durationMs: Date.now() - t0,
-      }
+      })
     },
   }))
 
@@ -155,7 +160,7 @@ export function registerTools(ctx, { registry, config }) {
         timeoutMs: defaultTimeout * 2,
         signal,
       })
-      return { text: formatRoundtableText(r), rounds: r.rounds }
+      return lossless({ text: formatRoundtableText(r), rounds: r.rounds })
     },
   }))
 
@@ -179,7 +184,7 @@ export function registerTools(ctx, { registry, config }) {
     async execute(args) {
       const provider = registry.get(String(args.provider || '').trim())
       const sessions = await provider.listSessions({ query: args.query || undefined, limit: Number(args.limit) || 20 })
-      return { sessions }
+      return lossless({ sessions })
     },
   }))
 
@@ -200,7 +205,7 @@ export function registerTools(ctx, { registry, config }) {
     },
     async execute(args) {
       const provider = registry.get(String(args.provider || '').trim())
-      return provider.readSession(String(args.sessionId), { maxChars: Number(args.maxChars) || 8000 })
+      return lossless(await provider.readSession(String(args.sessionId), { maxChars: Number(args.maxChars) || 8000 }))
     },
   }))
 }
