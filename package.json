@@ -10,7 +10,8 @@
   "main": "src/index.js",
   "exports": {
     ".": "./src/index.js",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./client": "./client/index.js"
   },
   "scripts": {
     "test": "node --test 'tests/*.test.js'"
@@ -18,7 +19,8 @@
   "files": [
     "src/",
     "cordis.patch.yml",
-    "docs/"
+    "docs/",
+    "client/"
   ],
   "engines": {
     "node": ">=22"
@@ -26,6 +28,12 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime"
+      ],
+      "platform": "web"
     }
   },
   "peerDependencies": {
