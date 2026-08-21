@@ -2,6 +2,10 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { registerHttp } from '../src/http.js'
 import { createRegistry } from '../src/provider/types.js'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+const tmpHome = () => fs.mkdtempSync(path.join(os.tmpdir(), 'aa-http-'))
 
 function mockHost() {
   const routes = []
@@ -30,7 +34,7 @@ const okProvider = {
 
 test('注册六个端点', () => {
   const host = mockHost()
-  registerHttp(host, { registry: createRegistry([okProvider]), config: { defaults: {} }, home: '/tmp' })
+  registerHttp(host, { registry: createRegistry([okProvider]), config: { defaults: {} }, home: tmpHome() })
   const paths = host.routes.map(r => r.path).sort()
   assert.deepEqual(paths, [
     '/__agent-alliance/dispatch',
@@ -45,7 +49,7 @@ test('注册六个端点', () => {
 test('GET session-content：读取外部会话内容', async () => {
   const p = { ...okProvider, readSession: async (id) => ({ title: 'T', messages: [{ role: 'user', text: 'q-' + id }] }) }
   const host = mockHost()
-  registerHttp(host, { registry: createRegistry([p]), config: { defaults: {} }, home: '/tmp' })
+  registerHttp(host, { registry: createRegistry([p]), config: { defaults: {} }, home: tmpHome() })
   const r = await host.handle('GET', '/__agent-alliance/session-content?provider=p1&id=s1')
   assert.equal(r.status, 200)
   assert.equal(r.json.title, 'T')
@@ -59,7 +63,7 @@ test('POST import：导入成功返回 dshSessionId；重复幂等', async () =>
   const registry = createRegistry([p])
   registerHttp(host, {
     registry, config: { defaults: {} },
-    home: '/tmp',
+    home: tmpHome(),
     // 测试注入落库通道：真实走 ctx.get('agents')，这里直接给 agents 服务
     getAgents: () => ({ create: async (spec) => { created.push(spec) } }),
   })
@@ -74,7 +78,7 @@ test('POST import：导入成功返回 dshSessionId；重复幂等', async () =>
 
 test('GET state：探测结果', async () => {
   const host = mockHost()
-  registerHttp(host, { registry: createRegistry([okProvider]), config: { defaults: {} }, home: '/tmp' })
+  registerHttp(host, { registry: createRegistry([okProvider]), config: { defaults: {} }, home: tmpHome() })
   const r = await host.handle('GET', '/__agent-alliance/state')
   assert.equal(r.status, 200)
   assert.equal(r.json.providers[0].id, 'p1')
@@ -83,7 +87,7 @@ test('GET state：探测结果', async () => {
 
 test('GET sessions：带 provider 过滤与 imported 标注', async () => {
   const host = mockHost()
-  registerHttp(host, { registry: createRegistry([okProvider]), config: { defaults: {} }, home: '/tmp' })
+  registerHttp(host, { registry: createRegistry([okProvider]), config: { defaults: {} }, home: tmpHome() })
   const r = await host.handle('GET', '/__agent-alliance/sessions?provider=p1')
   assert.equal(r.status, 200)
   assert.equal(r.json.sessions[0].provider, 'p1')
@@ -91,7 +95,7 @@ test('GET sessions：带 provider 过滤与 imported 标注', async () => {
 
 test('POST dispatch：成功返回文本；错误方法 405', async () => {
   const host = mockHost()
-  registerHttp(host, { registry: createRegistry([okProvider]), config: { defaults: { timeoutMs: 5000 } }, home: '/tmp' })
+  registerHttp(host, { registry: createRegistry([okProvider]), config: { defaults: { timeoutMs: 5000 } }, home: tmpHome() })
   const bad = await host.handle('GET', '/__agent-alliance/dispatch')
   assert.equal(bad.status, 405)
   const ok = await host.handle('POST', '/__agent-alliance/dispatch', { provider: 'p1', prompt: 'hi' })
