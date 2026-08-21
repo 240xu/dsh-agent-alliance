@@ -19,10 +19,10 @@ test('生成合法事件流：首事件是 turn/start（宿主自己写 session 
   assert.equal(types.at(-1), 'session/title')
 })
 
-test('seq 从 1 起连续递增', () => {
+test('seq 从 1 起连续递增（全部事件）', () => {
   const ev = convertToDshEvents({ id: 's', cwd: '/w', createdAt: 1700000000000, title: 'T', turns })
   let expect = 1
-  for (const e of ev.slice(1)) {
+  for (const e of ev) {
     assert.equal(e.seq, expect++, 'seq 必须连续')
     assert.equal(typeof e.time, 'number')
   }
