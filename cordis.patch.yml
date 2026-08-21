@@ -1,0 +1,4 @@
+# dsh-agent-alliance bundle patch: inserts the plugin row into the profile roster.
+- insert:
+    - id: agent-alliance
+      name: 'dsh-agent-alliance'

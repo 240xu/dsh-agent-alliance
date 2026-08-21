@@ -1,0 +1,42 @@
+{
+  "name": "dsh-agent-alliance",
+  "version": "0.1.0",
+  "description": "Run DSH alongside Claude Code / Codex / OpenCode / ZCode: dispatch tasks to them as subagents, hold roundtable discussions, browse their sessions, and import their histories into DSH.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "dsh-plugin"
+  ],
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./client": "./client/index.js",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "test": "node --test 'tests/*.test.js'"
+  },
+  "files": [
+    "src/",
+    "client/",
+    "cordis.patch.yml",
+    "docs/"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime"
+      ],
+      "platform": "web"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6"
+  }
+}
