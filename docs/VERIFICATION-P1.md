@@ -42,3 +42,21 @@
 1. 进 bundles 前必须先本地起一次验证；
 2. 不静默 kill/重启共享 3080 实例，重启前知会；
 3. 崩溃现场看 ~/dsh-web-3080.log 尾部栈 + ~/.dsh/monitor/dsh-web-monitor.log。
+
+## 进度更新（同日稍后）
+
+- **P2 圆桌完成**：runRoundtable 并发扇出+失败隔离+格式化；agent_roundtable 工具（默认后台 job）
+- **P3 导入器完成（代码级）**：
+  - convertToDshEvents：外部会话→DSH 事件流（schema 从真实 session.jsonl.zstd 多帧采样固化；
+    多帧 zstd 用 magic 切帧+node zlib 逐帧解码，与 fzstd 等效，零依赖）
+  - 四家 exportSession（claude 含工具配对；codex/opencode/zcode 文本级）
+  - persist：agents.create 优先 / sessionPersistence 回退；台账 imports.json 幂等
+  - agent_import_scan / agent_import 工具接入（共 6 工具）
+- **实测发现并修复**：工具输出含 undefined 违反宿主无损 JSON 契约 → lossless() 消毒（live-test finding）
+- 测试 74/74；安装副本已同步
+
+## 待办
+
+- [ ] 协调重启：激活 6 工具（运行中实例仍是 4 工具旧版）
+- [ ] 在线验证：import_scan 真实扫描 + import 一条真实会话 + dispatch 探针（需额度同意）
+- [ ] P4 Web 面板（client 入口须过 manifest-guard 守卫测试）
