@@ -2,11 +2,14 @@
 // apply(ctx)：config → providers → registry → 注册工具。
 // 防御性容错：任何初始化失败只记日志，绝不拖垮宿主启动（session-delete 先例）。
 
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { loadConfig } from './config.js'
 import { buildProviders } from './providers.js'
 import { registerTools } from './tools.js'
 
 const name = 'agent-alliance'
+// home 用于导入台账（~/.dsh/agent-alliance/imports.json）
 const inject = ['tools']
 
 function apply(ctx, overrides = {}) {
@@ -19,9 +22,10 @@ function apply(ctx, overrides = {}) {
     } else {
       config = loadConfig()
     }
+    const home = process.env.DSH_HOME || join(homedir(), '.dsh')
     const registry = buildProviders({ config })
-    registerTools(ctx, { registry, config })
-    console.log('[agent-alliance] tools registered: agent_dispatch / agent_roundtable / agent_sessions / agent_session_read')
+    registerTools(ctx, { registry, config, home })
+    console.log('[agent-alliance] tools registered: dispatch / roundtable / sessions / session_read / import_scan / import')
   } catch (err) {
     console.error('[agent-alliance] init failed (plugin disabled this boot):', err?.message || err)
   }

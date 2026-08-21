@@ -10,7 +10,7 @@ function mockCtx() {
 test('apply 注册四个工具', () => {
   const ctx = mockCtx()
   apply(ctx, { config: { providers: {}, defaults: {} } })
-  assert.equal(ctx.registered.length, 4)
+  assert.equal(ctx.registered.length, 6)
 })
 
 test('坏配置不炸（防御性容错）', () => {

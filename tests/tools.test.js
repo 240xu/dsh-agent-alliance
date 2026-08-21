@@ -2,6 +2,9 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { registerTools } from '../src/tools.js'
 import { createRegistry } from '../src/provider/types.js'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 
 function mockCtx() {
   const registered = []
@@ -26,10 +29,10 @@ const fakeProvider = {
 
 const config = { providers: {}, defaults: { timeoutMs: 300000, maxConcurrent: 3 } }
 
-test('注册四个工具且名字正确', () => {
+test('注册六个工具且名字正确', () => {
   const { ctx, registered } = mockCtx()
   registerTools(ctx, { registry: createRegistry([fakeProvider]), config })
-  assert.deepEqual(registered.map(t => t.name).sort(), ['agent_dispatch', 'agent_roundtable', 'agent_session_read', 'agent_sessions'])
+  assert.deepEqual(registered.map(x => x.name).sort(), ['agent_dispatch', 'agent_import', 'agent_import_scan', 'agent_roundtable', 'agent_session_read', 'agent_sessions'])
 })
 
 test('roundtable 默认后台：job 完成输出含各家回答与失败隔离', async () => {
@@ -148,3 +151,35 @@ test('dispatch 前台输出同样无损（externalSessionId 为 null 而非 unde
   const out = await tool.execute({ provider: 'fake', prompt: 'p' }, { signal: new AbortController().signal })
   assert.deepEqual(out, JSON.parse(JSON.stringify(out)))
 })
+
+
+test('agent_import_scan：列出会话并标注导入状态', async () => {
+  const home = tmpHome()
+  const pA = { ...fakeProvider, listSessions: async () => [{ id: 's1', title: 't1', createdAt: null, messageCount: null }] }
+  const { ctx, registered } = mockCtx()
+  registerTools(ctx, { registry: createRegistry([pA]), config, home })
+  const tool = registered.find(x => x.name === 'agent_import_scan')
+  const out = await tool.execute({ provider: 'fake' }, {})
+  assert.equal(out.total, 1)
+  assert.equal(out.sessions[0].imported, false)
+})
+
+test('agent_import：导入成功并幂等', async () => {
+  const home = tmpHome()
+  const pA = { ...fakeProvider, exportSession: async () => ({ title: 'T', createdAt: 1, cwd: '/w', turns: [{ user: 'u', assistant: 'a' }] }) }
+  const created = []
+  const ctx2 = {
+    tools: { register: (x) => registered2.push(x) },
+    jobs: { start: () => ({ id: 'j' }) },
+    get(name) { if (name === 'agents') return { create: async (s) => { created.push(s) } }; return undefined },
+  }
+  const registered2 = []
+  registerTools(ctx2, { registry: createRegistry([pA]), config, home })
+  const tool = registered2.find(x => x.name === 'agent_import')
+  const out = await tool.execute({ provider: 'fake', sessionId: 's1' }, {})
+  assert.equal(out.status, 'imported')
+  assert.equal(created.length, 1)
+  const out2 = await tool.execute({ provider: 'fake', sessionId: 's1' }, {})
+  assert.equal(out2.status, 'already-imported')
+})
+function tmpHome() { return fs.mkdtempSync(path.join(os.tmpdir(), 'aa-tools-')) }

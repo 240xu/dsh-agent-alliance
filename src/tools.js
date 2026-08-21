@@ -4,6 +4,7 @@
 
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { runRoundtable, formatRoundtableText } from './roundtable.js'
+import { loadLedger, importOne, sourceKey } from './importer/persist.js'
 
 // 宿主要求工具输出为无损 JSON：剔除 undefined / 函数等非法值
 function lossless(value) {
@@ -15,7 +16,7 @@ function labelOf(prompt) {
   return s.length > 60 ? s.slice(0, 60) + '…' : s
 }
 
-export function registerTools(ctx, { registry, config }) {
+export function registerTools(ctx, { registry, config, home }) {
   const defaults = config?.defaults || {}
   const defaultTimeout = defaults.timeoutMs || 300000
 
@@ -206,6 +207,74 @@ export function registerTools(ctx, { registry, config }) {
     async execute(args) {
       const provider = registry.get(String(args.provider || '').trim())
       return lossless(await provider.readSession(String(args.sessionId), { maxChars: Number(args.maxChars) || 8000 }))
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'agent_import_scan',
+    description: '只读扫描本插件支持的外部 agent（claude/codex/opencode/zcode）本地历史会话，返回可导入清单与导入状态。不写任何数据。',
+    parameters: {
+      provider: { type: 'string', description: '只扫指定 provider；缺省扫全部' },
+      query: { type: 'string', description: '按标题/目录/id 子串过滤' },
+      limit: { type: 'number', description: '每家返回上限（默认 20）' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render(_args, value) {
+        const rows = (value.sessions || []).map(s =>
+          '- [' + s.provider + '/' + s.id + '] ' + (s.title || '(无标题)') + (s.imported ? ' ✅已导入' : '') + (s.cwd ? ' @' + s.cwd : '')
+        )
+        return [{ type: 'text', text: (rows.join('\n') || '(无会话)') + '\n共 ' + value.total + ' 条' }]
+      },
+    },
+    async execute(args) {
+      const ledger = loadLedger(home)
+      const wanted = args.provider ? [String(args.provider)] : registry.list().map(p => p.id)
+      const sessions = []
+      for (const id of wanted) {
+        try {
+          const p = registry.get(id)
+          const list = await p.listSessions({ query: args.query || undefined, limit: Number(args.limit) || 20 })
+          for (const s of list) {
+            sessions.push({
+              provider: id,
+              id: String(s.id),
+              title: s.title ?? null,
+              cwd: s.cwd ?? null,
+              createdAt: s.createdAt ?? null,
+              imported: !!ledger[sourceKey(id, String(s.id))]?.dshSessionId,
+            })
+          }
+        } catch { /* 单家失败不影响整体 */ }
+      }
+      return lossless({ total: sessions.length, sessions })
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'agent_import',
+    description: '把一个外部 agent 历史会话导入为可继续的 DSH 会话（事件级还原，幂等：重复导入跳过）。先用 agent_import_scan 找 sessionId。',
+    parameters: {
+      provider: { type: 'string', required: true, description: 'claude | codex | opencode | zcode' },
+      sessionId: { type: 'string', required: true, description: '外部会话 id' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render(_args, value) {
+        if (value.status === 'imported') return [{ type: 'text', text: '已导入为 DSH 会话 ' + value.dshSessionId + '（' + value.turns + ' 轮）' }]
+        if (value.status === 'already-imported') return [{ type: 'text', text: '已导入过：' + value.dshSessionId + '（幂等跳过）' }]
+        if (value.status === 'skipped') return [{ type: 'text', text: '跳过：' + (value.reason || '') }]
+        return [{ type: 'text', text: JSON.stringify(value) }]
+      },
+    },
+    async execute(args) {
+      const r = await importOne(ctx, {
+        registry,
+        provider: String(args.provider),
+        externalId: String(args.sessionId),
+        home,
+      })
+      return lossless(r)
     },
   }))
 }
