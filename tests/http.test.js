@@ -32,6 +32,27 @@ const okProvider = {
   listSessions: async () => [{ id: 's1', title: 't', createdAt: null, messageCount: null }],
 }
 
+test('POST roundtable：经 jobs.start 启动，GET 可轮询直至完成', async () => {
+  const p = { ...okProvider, dispatch: async ({ prompt }) => ({ text: '桌答:' + prompt }) }
+  const started = []
+  const host = mockHost()
+  registerHttp(host, {
+    registry: createRegistry([p]), config: { defaults: {} }, home: tmpHome(),
+    startJob: (spec) => { started.push(spec); const hooks = spec.run(); return { id: 'rt-1', hooks } },
+  })
+  const r1 = await host.handle('POST', '/__agent-alliance/roundtable', { prompt: '评审这个设计' })
+  assert.equal(r1.status, 200)
+  assert.equal(r1.json.jobId, 'rt-1')
+  assert.equal(started.length, 1)
+  assert.equal(started[0].kind, 'agent-alliance')
+  // 轮询：等微任务完成后带 output
+  await new Promise((r) => setTimeout(r, 20));
+  const r2 = await host.handle('GET', '/__agent-alliance/roundtable?id=rt-1')
+  assert.equal(r2.status, 200)
+  if (r2.json.running) throw new Error('应已完成')
+  assert.match(r2.json.output, /桌答:评审这个设计/)
+})
+
 test('注册六个端点', () => {
   const host = mockHost()
   registerHttp(host, { registry: createRegistry([okProvider]), config: { defaults: {} }, home: tmpHome() })
@@ -40,6 +61,7 @@ test('注册六个端点', () => {
     '/__agent-alliance/dispatch',
     '/__agent-alliance/import',
     '/__agent-alliance/jobs',
+    '/__agent-alliance/roundtable',
     '/__agent-alliance/session-content',
     '/__agent-alliance/sessions',
     '/__agent-alliance/state',

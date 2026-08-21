@@ -6,8 +6,10 @@
 
 import { loadLedger, sourceKey } from './importer/persist.js'
 import { importOne } from './importer/persist.js'
+import { runRoundtable, formatRoundtableText } from './roundtable.js'
 
-export function registerHttp(host, { registry, config, home, getAgents }) {
+export function registerHttp(host, { registry, config, home, getAgents, startJob }) {
+  const roundtables = new Map() // id -> {output?|running}
   // getAgents（可选，测试注入）：返回宿主 agents 服务；缺省走 ctx 之外无法拿到——
   // 生产路径由 index.js 闭包提供 ctx.get('agents')。
   const recent = []
@@ -112,6 +114,54 @@ export function registerHttp(host, { registry, config, home, getAgents }) {
       } catch (err) {
         sendJson(res, 500, { error: String(err?.message || err).slice(-400) })
       }
+    },
+  })
+
+  host.register({
+    kind: 'exact',
+    path: '/__agent-alliance/roundtable',
+    handler: async (req, res) => {
+      if (req.method === 'POST') {
+        let args = {}
+        try { args = JSON.parse((await readBody(req)) || '{}') } catch { sendJson(res, 400, { error: 'bad json body' }); return }
+        if (!startJob) { sendJson(res, 501, { error: 'roundtable 需要 jobs 服务（宿主未提供）' }); return }
+        try {
+          const prompt = String(args.prompt || '')
+          const providerIds = Array.isArray(args.providers) ? args.providers.map(String) : undefined
+          const ac = new AbortController()
+          let doneResolve
+          const done = new Promise((r) => { doneResolve = r })
+          const handle = startJob({
+            kind: 'agent-alliance',
+            label: 'roundtable: ' + prompt.replace(/\s+/g, ' ').trim().slice(0, 60),
+            run() {
+              runRoundtable({ registry, prompt, providerIds, cwd: args.cwd || config?.defaults?.defaultCwd || undefined, timeoutMs: (config?.defaults?.timeoutMs || 300000) * 2, signal: ac.signal })
+                .then((r) => { doneResolve({ status: 'completed', output: formatRoundtableText(r) }) },
+                      (err) => { doneResolve({ status: 'failed', detail: String(err?.message || err).slice(-400) }) })
+              return { cancel(reason) { ac.abort(new Error(reason || 'cancelled')) }, done }
+            },
+          })
+          const entry = { running: true, output: null, detail: null }
+          roundtables.set(handle.id, entry)
+          done.then((outcome) => {
+            entry.running = false
+            entry.output = outcome.output ?? null
+            entry.detail = outcome.detail ?? null
+          })
+          sendJson(res, 200, { jobId: handle.id })
+        } catch (err) {
+          sendJson(res, 500, { error: String(err?.message || err).slice(-300) })
+        }
+        return
+      }
+      // GET 轮询
+      if (req.method !== 'GET') { sendJson(res, 405, { error: 'method not allowed' }); return }
+      const url = new URL(req.url ?? '/', 'http://local')
+      const id = String(url.searchParams.get('id') || '')
+      const entry = roundtables.get(id)
+      if (!entry) { sendJson(res, 404, { error: 'unknown roundtable job' }); return }
+      if (entry.running) sendJson(res, 200, { running: true })
+      else sendJson(res, 200, { running: false, output: entry.output, detail: entry.detail ?? null })
     },
   })
 
