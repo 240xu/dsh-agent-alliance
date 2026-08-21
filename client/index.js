@@ -210,20 +210,53 @@ window.__ModuleLoader__.load({
         st.result ? h('pre', { className: 'aaa-pre', style: { marginTop: '10px' } }, st.result) : null);
     }
 
+    function RoundtableTab() {
+      var s = react.useState({ prompt: '', jobId: null, running: false, output: null, err: null });
+      var st = s[0], set = s[1];
+      var upd = function (patch) { set(function (cur) { return Object.assign({}, cur, patch); }); };
+      var poll = function (id) {
+        fetch('/__agent-alliance/roundtable?id=' + encodeURIComponent(id))
+          .then(function (r) { return r.json(); })
+          .then(function (j) {
+            if (j.running) setTimeout(function () { poll(id); }, 1500);
+            else upd({ running: false, output: j.output || ('失败：' + (j.detail || '未知')) });
+          }, function () { upd({ running: false, output: '轮询失败' }); });
+      };
+      var run = function () {
+        if (!st.prompt.trim()) return;
+        upd({ busy: true });
+        api('/roundtable', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: st.prompt }) })
+          .then(function (r) {
+            if (r.status !== 200) { upd({ busy: false, err: (r.json && r.json.error) || r.status }); return; }
+            upd({ busy: false, jobId: r.json.jobId, running: true });
+            poll(r.json.jobId);
+          }, function () { upd({ busy: false, err: '请求失败' }); });
+      };
+      return h('div', null,
+        h('div', { className: 'aaa-dim', style: { marginBottom: '8px' } }, '⚠ 并发派发给全部可用 agent，真实消耗各家额度'),
+        h('textarea', { className: 'aaa-textarea', placeholder: '圆桌问题…', value: st.prompt, onChange: function (e) { upd({ prompt: e.target.value }); } }),
+        h('div', { style: { marginTop: '8px' } },
+          h('button', { className: 'aaa-btn', disabled: st.busy || st.running, onClick: run },
+            st.running ? '圆桌进行中…' : '发起圆桌'),
+          st.jobId ? h('span', { className: 'aaa-dim', style: { marginLeft: '8px' } }, 'job ' + st.jobId) : null),
+        st.err ? h('div', { className: 'aaa-bad', style: { marginTop: '8px' } }, st.err) : null,
+        st.output ? h('pre', { className: 'aaa-pre', style: { marginTop: '10px' } }, st.output) : null);
+    }
+
     function Panel(props) {
       var ts = react.useState('state');
       var tab = ts[0], setTab = ts[1];
       if (!props.open) return null;
-      var body = tab === 'state' ? h(StateTab) : tab === 'sessions' ? h(SessionsTab) : h(DispatchTab);
+      var body = tab === 'state' ? h(StateTab) : tab === 'sessions' ? h(SessionsTab) : tab === 'roundtable' ? h(RoundtableTab) : h(DispatchTab);
       return h('div', { className: 'aaa-overlay', onClick: props.onClose },
         h('div', { className: 'aaa-panel', onClick: function (e) { e.stopPropagation(); } },
           h('div', { className: 'aaa-head' },
             h('span', { className: 'aaa-title' }, 'Agent 协同'),
             h('button', { className: 'aaa-close', onClick: props.onClose }, '✕')),
           h('div', { className: 'aaa-tabs' },
-            ['state', 'sessions', 'dispatch'].map(function (t) {
+            ['state', 'sessions', 'dispatch', 'roundtable'].map(function (t) {
               return h('button', { key: t, className: 'aaa-tab', 'data-active': tab === t ? '1' : '0', onClick: function () { setTab(t); } },
-                t === 'state' ? '状态' : t === 'sessions' ? '外部会话' : '派发任务');
+                t === 'state' ? '状态' : t === 'sessions' ? '外部会话' : t === 'roundtable' ? '圆桌' : '派发任务');
             })),
           h('div', { className: 'aaa-body' }, body)));
     }

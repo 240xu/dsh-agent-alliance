@@ -29,6 +29,11 @@ function apply(ctx, overrides = {}) {
     registerTools(ctx, opts)
 
     // 面板端点（可选 webServer）：终端 profile 不挂；web 面出现时经 inject 兜底注册
+    const jobsSvc = ctx.get('jobs')
+    if (jobsSvc && typeof jobsSvc.start === 'function') {
+      opts.startJob = (spec) => jobsSvc.start(spec)
+    }
+
     const ws = ctx.get('webServer')
     if (ws !== undefined && typeof ws.register === 'function') {
       registerHttp(ws, opts)
