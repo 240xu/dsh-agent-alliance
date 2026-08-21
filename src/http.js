@@ -5,8 +5,11 @@
 // POST /__agent-alliance/dispatch {provider,prompt,cwd?,resumeSessionId?,model?}（前台等待）
 
 import { loadLedger, sourceKey } from './importer/persist.js'
+import { importOne } from './importer/persist.js'
 
-export function registerHttp(host, { registry, config, home }) {
+export function registerHttp(host, { registry, config, home, getAgents }) {
+  // getAgents（可选，测试注入）：返回宿主 agents 服务；缺省走 ctx 之外无法拿到——
+  // 生产路径由 index.js 闭包提供 ctx.get('agents')。
   const recent = []
 
   function sendJson(res, status, obj) {
@@ -72,6 +75,43 @@ export function registerHttp(host, { registry, config, home }) {
     handler: async (req, res) => {
       if (req.method !== 'GET') { sendJson(res, 405, { error: 'method not allowed' }); return }
       sendJson(res, 200, { recentDispatches: recent.slice(-50) })
+    },
+  })
+
+  host.register({
+    kind: 'exact',
+    path: '/__agent-alliance/session-content',
+    handler: async (req, res) => {
+      if (req.method !== 'GET') { sendJson(res, 405, { error: 'method not allowed' }); return }
+      const url = new URL(req.url ?? '/', 'http://local')
+      try {
+        const p = registry.get(String(url.searchParams.get('provider') || ''))
+        const content = await p.readSession(String(url.searchParams.get('id') || ''), {
+          maxChars: Number(url.searchParams.get('maxChars')) || 12000,
+        })
+        sendJson(res, 200, JSON.parse(JSON.stringify(content ?? null)))
+      } catch (err) {
+        sendJson(res, 500, { error: String(err?.message || err).slice(-300) })
+      }
+    },
+  })
+
+  host.register({
+    kind: 'exact',
+    path: '/__agent-alliance/import',
+    handler: async (req, res) => {
+      if (req.method !== 'POST') { sendJson(res, 405, { error: 'method not allowed' }); return }
+      let args = {}
+      try { args = JSON.parse((await readBody(req)) || '{}') } catch { sendJson(res, 400, { error: 'bad json body' }); return }
+      try {
+        const r = await importOne(
+          { get: (name) => name === 'agents' && getAgents ? getAgents() : undefined },
+          { registry, provider: String(args.provider || ''), externalId: String(args.sessionId || ''), home },
+        )
+        sendJson(res, 200, r)
+      } catch (err) {
+        sendJson(res, 500, { error: String(err?.message || err).slice(-400) })
+      }
     },
   })
 

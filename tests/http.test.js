@@ -11,7 +11,7 @@ function mockHost() {
     async handle(method, path, body) {
       const route = routes.find(r => r.path === path.split('?')[0])
       if (!route) return { status: 404 }
-      const req = { method, on(ev, cb) { if (ev === 'data') body && cb(JSON.stringify(body)); if (ev === 'end') cb() }, destroyed: false, destroy() {} }
+      const req = { method, url: path, on(ev, cb) { if (ev === 'data') body && cb(JSON.stringify(body)); if (ev === 'end') cb() }, destroyed: false, destroy() {} }
       const res = { statusCode: 0, headers: null, out: '', writeHead(s, h) { this.statusCode = s; this.headers = h }, end(x) { this.out += x ?? '' } }
       await route.handler(req, res)
       let json = null
@@ -28,11 +28,48 @@ const okProvider = {
   listSessions: async () => [{ id: 's1', title: 't', createdAt: null, messageCount: null }],
 }
 
-test('注册四个端点', () => {
+test('注册六个端点', () => {
   const host = mockHost()
   registerHttp(host, { registry: createRegistry([okProvider]), config: { defaults: {} }, home: '/tmp' })
   const paths = host.routes.map(r => r.path).sort()
-  assert.deepEqual(paths, ['/__agent-alliance/dispatch', '/__agent-alliance/jobs', '/__agent-alliance/sessions', '/__agent-alliance/state'])
+  assert.deepEqual(paths, [
+    '/__agent-alliance/dispatch',
+    '/__agent-alliance/import',
+    '/__agent-alliance/jobs',
+    '/__agent-alliance/session-content',
+    '/__agent-alliance/sessions',
+    '/__agent-alliance/state',
+  ])
+})
+
+test('GET session-content：读取外部会话内容', async () => {
+  const p = { ...okProvider, readSession: async (id) => ({ title: 'T', messages: [{ role: 'user', text: 'q-' + id }] }) }
+  const host = mockHost()
+  registerHttp(host, { registry: createRegistry([p]), config: { defaults: {} }, home: '/tmp' })
+  const r = await host.handle('GET', '/__agent-alliance/session-content?provider=p1&id=s1')
+  assert.equal(r.status, 200)
+  assert.equal(r.json.title, 'T')
+  assert.equal(r.json.messages[0].text, 'q-s1')
+})
+
+test('POST import：导入成功返回 dshSessionId；重复幂等', async () => {
+  const p = { ...okProvider, exportSession: async () => ({ title: 'T', createdAt: 1, cwd: '/w', turns: [{ user: 'u', assistant: 'a' }] }) }
+  const created = []
+  const host = mockHost()
+  const registry = createRegistry([p])
+  registerHttp(host, {
+    registry, config: { defaults: {} },
+    home: '/tmp',
+    // 测试注入落库通道：真实走 ctx.get('agents')，这里直接给 agents 服务
+    getAgents: () => ({ create: async (spec) => { created.push(spec) } }),
+  })
+  const r1 = await host.handle('POST', '/__agent-alliance/import', { provider: 'p1', sessionId: 's1' })
+  assert.equal(r1.status, 200)
+  assert.equal(r1.json.status, 'imported')
+  assert.ok(r1.json.dshSessionId)
+  assert.equal(created.length, 1)
+  const r2 = await host.handle('POST', '/__agent-alliance/import', { provider: 'p1', sessionId: 's1' })
+  assert.equal(r2.json.status, 'already-imported')
 })
 
 test('GET state：探测结果', async () => {
