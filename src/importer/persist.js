@@ -54,16 +54,24 @@ export async function importOne(ctx, { registry, provider: providerId, externalI
     turns: ext.turns,
   })
 
-  const agents = ctx.get('agents')
+  // 直写持久化优先：导入是历史还原，不需要 agent 生命周期（其策略注入路径
+  // 在本部署会追加不可序列化的 sandbox/mode）。写完预热投影缓存让 GUI 列表可见。
+  const sp = ctx.get('sessionPersistence')
   let created = false
-  if (agents && typeof agents.create === 'function') {
-    await agents.create({ sessionId: dshSessionId, meta: { id: dshSessionId, cwd, createdAt: ext.createdAt || Date.now() }, seed: events })
-    created = true
-  } else {
-    const sp = ctx.get('sessionPersistence')
-    if (!sp) throw new Error('宿主既无 agents 也无 sessionPersistence 服务，无法落库')
+  if (sp && typeof sp.create === 'function' && typeof sp.append === 'function') {
     await sp.create({ id: dshSessionId, cwd, createdAt: ext.createdAt || Date.now() })
     await sp.append(dshSessionId, events)
+    const proj = ctx.get('sessionProjectionCache')
+    if (proj && typeof proj.coldSnapshot === 'function') {
+      try { await proj.coldSnapshot(dshSessionId) } catch { /* 预热失败不影响落盘 */ }
+    }
+  } else {
+    const agents = ctx.get('agents')
+    if (!agents || typeof agents.create !== 'function') {
+      throw new Error('宿主既无 sessionPersistence 也无 agents 服务，无法落库')
+    }
+    await agents.create({ sessionId: dshSessionId, meta: { id: dshSessionId, cwd, createdAt: ext.createdAt || Date.now() }, seed: events })
+    created = true
   }
 
   ledger[key] = {
@@ -72,7 +80,7 @@ export async function importOne(ctx, { registry, provider: providerId, externalI
     externalId: String(externalId),
     importedAt: Date.now(),
     turns: ext.turns.length,
-    via: created ? 'agents.create' : 'sessionPersistence',
+    via: created ? 'agents.create' : 'sessionPersistence.direct',
   }
   saveLedger(home, ledger)
   return { status: 'imported', dshSessionId, turns: ext.turns.length, title: ext.title ?? null }

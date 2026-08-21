@@ -40,23 +40,44 @@ const extProvider = {
   }),
 }
 
-test('importOne：走 agents.create 落库，meta 带 cwd、seed 为合法事件流', async () => {
+test('importOne：优先 sessionPersistence 直写，投影预热被调用', async () => {
   const home = tmpHome()
-  const ctx = makeCtx(home)
+  const calls = []
+  const warmed = []
+  const ctx = {
+    get(name) {
+      if (name === 'sessionPersistence') {
+        return {
+          create: async (meta) => { calls.push(['create', meta]) },
+          append: async (id, events) => { calls.push(['append', id, events.length]) },
+        }
+      }
+      if (name === 'sessionProjectionCache') {
+        return { coldSnapshot: async (id) => { warmed.push(id) } }
+      }
+      return undefined
+    },
+  }
   const reg = createRegistry([extProvider])
   const r = await importOne(ctx, { registry: reg, provider: extProvider.id, externalId: 'e1', home })
   assert.equal(r.status, 'imported')
   assert.ok(r.dshSessionId)
-  assert.equal(ctx.__created.length, 1)
-  const spec = ctx.__created[0]
-  assert.equal(spec.sessionId, r.dshSessionId)
-  assert.ok(Array.isArray(spec.seed) && spec.seed.length > 5)
-  assert.equal(spec.seed[0].type, 'turn/start')
-  assert.equal(spec.meta.cwd, '/ext/w')
+  assert.deepEqual(calls.map(c => c[0]), ['create', 'append'])
+  assert.equal(calls[1][2] > 5, true)
+  assert.deepEqual(warmed, [r.dshSessionId])
   // 幂等：重复导入跳过
   const r2 = await importOne(ctx, { registry: reg, provider: extProvider.id, externalId: 'e1', home })
   assert.equal(r2.status, 'already-imported')
-  assert.equal(ctx.__created.length, 1)
+})
+
+test('无 sessionPersistence 时回退 agents.create', async () => {
+  const home = tmpHome()
+  const created = []
+  const ctx = { get(name) { if (name === 'agents') return { create: async (s) => { created.push(s) } }; return undefined } }
+  const reg = createRegistry([extProvider])
+  const r = await importOne(ctx, { registry: reg, provider: 'ext', externalId: 'e3', home })
+  assert.equal(r.status, 'imported')
+  assert.equal(created.length, 1)
 })
 
 test('ledger 持久化与读取', async () => {
