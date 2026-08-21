@@ -26,10 +26,35 @@ const fakeProvider = {
 
 const config = { providers: {}, defaults: { timeoutMs: 300000, maxConcurrent: 3 } }
 
-test('注册三个工具且名字正确', () => {
+test('注册四个工具且名字正确', () => {
   const { ctx, registered } = mockCtx()
   registerTools(ctx, { registry: createRegistry([fakeProvider]), config })
-  assert.deepEqual(registered.map(t => t.name).sort(), ['agent_dispatch', 'agent_session_read', 'agent_sessions'])
+  assert.deepEqual(registered.map(t => t.name).sort(), ['agent_dispatch', 'agent_roundtable', 'agent_session_read', 'agent_sessions'])
+})
+
+test('roundtable 默认后台：job 完成输出含各家回答与失败隔离', async () => {
+  const pA = { ...fakeProvider, id: 'a', dispatch: async ({ prompt }) => ({ text: 'A答:' + prompt }) }
+  const pBad = { ...fakeProvider, id: 'b', dispatch: async () => { throw new Error('b 炸') } }
+  const { ctx, registered, jobsStarted } = mockCtx()
+  registerTools(ctx, { registry: createRegistry([pA, pBad]), config })
+  const tool = registered.find(x => x.name === 'agent_roundtable')
+  const out = await tool.execute({ prompt: '设计对比' }, { agent: { id: 'ag' }, signal: new AbortController().signal })
+  assert.equal(out.kind, 'background')
+  const hooks = jobsStarted[0].run()
+  const outcome = await hooks.done
+  assert.equal(outcome.status, 'completed')
+  assert.match(outcome.output, /\[a\]/)
+  assert.match(outcome.output, /A答:设计对比/)
+  assert.match(outcome.output, /\[b\] 失败/)
+})
+
+test('roundtable background:false 可前台等待', async () => {
+  const pA = { ...fakeProvider, id: 'a', dispatch: async ({ prompt }) => ({ text: 'X' + prompt }) }
+  const { ctx, registered } = mockCtx()
+  registerTools(ctx, { registry: createRegistry([pA]), config })
+  const tool = registered.find(x => x.name === 'agent_roundtable')
+  const out = await tool.execute({ prompt: 'q', background: false }, { signal: new AbortController().signal })
+  assert.match(out.text, /Xq/)
 })
 
 test('dispatch 前台：返回文本与会话id，耗时字段存在', async () => {

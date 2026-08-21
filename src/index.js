@@ -21,7 +21,7 @@ function apply(ctx, overrides = {}) {
     }
     const registry = buildProviders({ config })
     registerTools(ctx, { registry, config })
-    console.log('[agent-alliance] tools registered: agent_dispatch / agent_sessions / agent_session_read')
+    console.log('[agent-alliance] tools registered: agent_dispatch / agent_roundtable / agent_sessions / agent_session_read')
   } catch (err) {
     console.error('[agent-alliance] init failed (plugin disabled this boot):', err?.message || err)
   }

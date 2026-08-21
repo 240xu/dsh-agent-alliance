@@ -3,6 +3,7 @@
 // 后台模式走 ctx.jobs（kind 'agent-alliance'），取消经自有 AbortController。
 
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { runRoundtable, formatRoundtableText } from './roundtable.js'
 
 function labelOf(prompt) {
   const s = String(prompt || '').replace(/\s+/g, ' ').trim()
@@ -93,6 +94,68 @@ export function registerTools(ctx, { registry, config }) {
         externalSessionId: out.externalSessionId ?? null,
         durationMs: Date.now() - t0,
       }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'agent_roundtable',
+    description: [
+      '圆桌讨论：把同一问题并发派发给多个外部 agent（claude/codex/opencode/zcode），收集各自观点后输出对比文本（综合分析由你完成）。',
+      '注意：会真实消耗各家 API 额度，各家可能在其 cwd 内读写文件——重要操作先征得用户同意。',
+      '默认后台运行返回 jobId；providers 缺省为全部已配置成员。',
+    ].join('\n'),
+    parameters: {
+      prompt: { type: 'string', required: true, description: '发给所有参与 agent 的同一问题' },
+      providers: { type: 'array', description: '参与的 provider id 列表（缺省全部）', items: { type: 'string' } },
+      cwd: { type: 'string', description: '工作目录' },
+      background: { type: 'boolean', description: '默认 true；false 时前台等待全部返回' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render(_args, value) {
+        if (value && value.kind === 'background') {
+          return [{ type: 'text', text: 'started background job ' + value.jobId }]
+        }
+        if (value && typeof value.text === 'string') return [{ type: 'text', text: value.text }]
+        return [{ type: 'text', text: JSON.stringify(value) }]
+      },
+    },
+    async execute(args, exec) {
+      const signal = exec?.signal
+      if (args.background !== false) {
+        let doneResolve
+        const done = new Promise((res) => { doneResolve = res })
+        const ac = new AbortController()
+        const handle = ctx.jobs.start({
+          kind: 'agent-alliance',
+          label: 'roundtable: ' + labelOf(args.prompt),
+          owner: exec?.agent,
+          outputLimitBytes: 262144,
+          run() {
+            runRoundtable({
+              registry, prompt: String(args.prompt),
+              providerIds: Array.isArray(args.providers) ? args.providers.map(String) : undefined,
+              cwd: args.cwd || defaults.defaultCwd || undefined,
+              timeoutMs: defaultTimeout * 2,
+              signal: ac.signal,
+            }).then((r) => {
+              doneResolve({ status: 'completed', output: formatRoundtableText(r) })
+            }, (err) => {
+              doneResolve({ status: 'failed', detail: String(err?.message || err).slice(-500) })
+            })
+            return { cancel(reason) { ac.abort(new Error(reason || 'cancelled')) }, done }
+          },
+        })
+        return { kind: 'background', jobId: handle.id }
+      }
+      const r = await runRoundtable({
+        registry, prompt: String(args.prompt),
+        providerIds: Array.isArray(args.providers) ? args.providers.map(String) : undefined,
+        cwd: args.cwd || defaults.defaultCwd || undefined,
+        timeoutMs: defaultTimeout * 2,
+        signal,
+      })
+      return { text: formatRoundtableText(r), rounds: r.rounds }
     },
   }))
 
