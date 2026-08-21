@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import { loadConfig } from './config.js'
 import { buildProviders } from './providers.js'
 import { registerTools } from './tools.js'
+import { registerHttp } from './http.js'
 
 const name = 'agent-alliance'
 // home 用于导入台账（~/.dsh/agent-alliance/imports.json）
@@ -24,7 +25,24 @@ function apply(ctx, overrides = {}) {
     }
     const home = process.env.DSH_HOME || join(homedir(), '.dsh')
     const registry = buildProviders({ config })
-    registerTools(ctx, { registry, config, home })
+    const opts = { registry, config, home }
+    registerTools(ctx, opts)
+
+    // 面板端点（可选 webServer）：终端 profile 不挂；web 面出现时经 inject 兜底注册
+    const ws = ctx.get('webServer')
+    if (ws !== undefined && typeof ws.register === 'function') {
+      registerHttp(ws, opts)
+      console.log('[agent-alliance] panel endpoints registered under /__agent-alliance/')
+    } else if (typeof ctx.inject === 'function') {
+      ctx.inject(['webServer'], (sub) => {
+        try {
+          registerHttp(sub.webServer, opts)
+          console.log('[agent-alliance] panel endpoints registered (late webServer)')
+        } catch (err) {
+          console.error('[agent-alliance] http registration failed:', err?.message || err)
+        }
+      })
+    }
     console.log('[agent-alliance] tools registered: dispatch / roundtable / sessions / session_read / import_scan / import')
   } catch (err) {
     console.error('[agent-alliance] init failed (plugin disabled this boot):', err?.message || err)
