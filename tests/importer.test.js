@@ -63,6 +63,7 @@ test('importOne：优先 sessionPersistence 直写，投影预热被调用', asy
   assert.equal(r.status, 'imported')
   assert.ok(r.dshSessionId)
   assert.deepEqual(calls.map(c => c[0]), ['create', 'append'])
+  assert.equal(calls[0][1].version, 0)
   assert.equal(calls[1][2] > 5, true)
   assert.deepEqual(warmed, [r.dshSessionId])
   // 幂等：重复导入跳过

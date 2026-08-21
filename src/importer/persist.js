@@ -59,7 +59,7 @@ export async function importOne(ctx, { registry, provider: providerId, externalI
   const sp = ctx.get('sessionPersistence')
   let created = false
   if (sp && typeof sp.create === 'function' && typeof sp.append === 'function') {
-    await sp.create({ id: dshSessionId, cwd, createdAt: ext.createdAt || Date.now() })
+    await sp.create({ id: dshSessionId, version: 0, cwd, createdAt: ext.createdAt || Date.now() })
     await sp.append(dshSessionId, events)
     const proj = ctx.get('sessionProjectionCache')
     if (proj && typeof proj.coldSnapshot === 'function') {
