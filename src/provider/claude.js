@@ -3,7 +3,9 @@
 // dispatch: grun <bin> -p <prompt> --output-format stream-json [--resume id] [--model m]
 // 会话存储：~/.claude/projects/<cwd-slug>/<uuid>.jsonl
 
-import { readdirSync, readFileSync } from 'node:fs'
+import { readdirSync, readFileSync, statSync } from 'node:fs'
+
+function require_stat(p) { const s = statSync(p); if (!s.isFile()) throw new Error('not file'); return s }
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { spawnCli as defaultSpawnCli } from '../runner.js'
@@ -150,6 +152,73 @@ export function makeClaudeProvider({ deps = {} } = {}) {
     throw new Error('claude session not found: ' + id)
   }
 
+  // 完整导出（导入器用）：规范化 turns，含工具配对；不截断。
+  async function exportSession(id) {
+    let projects
+    try { projects = readdirSync(paths.projectsRoot, { withFileTypes: true }) } catch { throw new Error('claude projects 根不可读') }
+    let file = null
+    for (const proj of projects) {
+      if (!proj.isDirectory()) continue
+      const cand = join(paths.projectsRoot, proj.name, id + '.jsonl')
+      try { if (require_stat(cand)) { file = cand; break } } catch { /* keep scanning */ }
+    }
+    if (!file) throw new Error('claude session not found: ' + id)
+    const raw = readFileSync(file, 'utf8')
+    const objs = raw.split('\n').filter(Boolean).map(l => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean)
+
+    let title
+    let createdAt = null
+    const turns = []
+    let cur = null
+    const pendingTools = new Map() // tool_use_id -> tool entry（跨 assistant 行配对）
+
+    function ensureTurn() {
+      if (!cur) { cur = { user: undefined, assistant: undefined, tools: [] }; turns.push(cur) }
+      return cur
+    }
+
+    for (const o of objs) {
+      if (o.type === 'summary' && typeof o.summary === 'string' && !title) { title = o.summary; continue }
+      if (typeof o.timestamp === 'string' && !createdAt) createdAt = Date.parse(o.timestamp)
+      if (o.type === 'user') {
+        const content = o.message?.content
+        const items = Array.isArray(content) ? content : [{ type: 'text', text: typeof content === 'string' ? content : '' }]
+        // tool_result 行：挂到对应工具，不开新轮
+        const trItems = items.filter(b => b?.type === 'tool_result')
+        if (trItems.length) {
+          for (const tr of trItems) {
+            const tool = pendingTools.get(tr.tool_use_id)
+            const text = typeof tr.content === 'string' ? tr.content
+              : Array.isArray(tr.content) ? tr.content.filter(x => x?.type === 'text').map(x => x.text).join('\n') : ''
+            if (tool) { tool.resultText = text; tool.isError = !!tr.is_error; pendingTools.delete(tr.tool_use_id) }
+          }
+          continue
+        }
+        const texts = items.filter(b => b?.type === 'text' && b.text && !b.text.trimStart().startsWith('<'))
+        if (!texts.length) continue
+        cur = null // 新用户文本开新轮
+        ensureTurn().user = texts.map(b => b.text).join('\n')
+        continue
+      }
+      if (o.type === 'assistant') {
+        const content = o.message?.content
+        if (!Array.isArray(content)) continue
+        const t = ensureTurn()
+        for (const b of content) {
+          if (b?.type === 'text' && b.text) {
+            t.assistant = (t.assistant ? t.assistant + '\n' : '') + b.text
+          } else if (b?.type === 'tool_use' && b.id) {
+            const entry = { name: String(b.name || 'unknown'), args: b.input ?? {}, resultText: '', isError: false }
+            t.tools.push(entry)
+            pendingTools.set(b.id, entry)
+          }
+          // thinking 块跳过（DSH 侧以 reasoning delta 呈现，导入 v1 不还原）
+        }
+      }
+    }
+    return { title, createdAt, cwd: undefined, turns }
+  }
+
   return defineProviderShim({
     id: 'claude',
     label: 'Claude Code',
@@ -157,5 +226,6 @@ export function makeClaudeProvider({ deps = {} } = {}) {
     dispatch,
     listSessions,
     readSession,
+    exportSession,
   })
 }

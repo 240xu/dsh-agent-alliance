@@ -93,3 +93,32 @@ test('claude 标题跳过 local-command 注入行', async () => {
   const list = await p.listSessions({})
   assert.equal(list.find(s => s.id === 'ddd').title, '真实提问')
 })
+
+
+test('exportSession：完整导出规范化 turns（注入跳过 + 工具配对 + 多轮）', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aa-claude3-'))
+  const proj = path.join(root, '-w')
+  fs.mkdirSync(proj)
+  const L = (o) => JSON.stringify(o)
+  fs.writeFileSync(path.join(proj, 'eee.jsonl'), [
+    L({ type: 'summary', summary: '会话摘要标题' }),
+    L({ type: 'user', message: { content: [{ type: 'text', text: '<system-reminder>注入</system-reminder>' }] }, timestamp: '2026-08-20T10:00:00Z' }),
+    L({ type: 'user', message: { content: [{ type: 'text', text: '问题一' }] }, timestamp: '2026-08-20T10:00:01Z' }),
+    L({ type: 'assistant', message: { content: [{ type: 'thinking', thinking: '...' }, { type: 'text', text: '回答一' }] } }),
+    L({ type: 'user', message: { content: [{ type: 'text', text: '问题二' }] } }),
+    L({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tu1', name: 'Bash', input: { command: 'ls' } }] } }),
+    L({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'tu1', content: '输出内容', is_error: false }] } }),
+    L({ type: 'assistant', message: { content: [{ type: 'text', text: '工具后的总结' }] } }),
+  ].join('\n'))
+  const p = makeClaudeProvider({ deps: { paths: { grun: '/g', claudeBin: '/b', projectsRoot: root } } })
+  const s = await p.exportSession('eee')
+  assert.equal(s.title, '会话摘要标题')
+  assert.equal(s.createdAt, Date.parse('2026-08-20T10:00:00Z'))
+  assert.equal(s.turns.length, 2)
+  assert.equal(s.turns[0].user, '问题一')
+  assert.equal(s.turns[0].assistant, '回答一')
+  assert.equal(s.turns[1].user, '问题二')
+  assert.equal(s.turns[1].tools.length, 1)
+  assert.deepEqual(s.turns[1].tools[0], { name: 'Bash', args: { command: 'ls' }, resultText: '输出内容', isError: false })
+  assert.equal(s.turns[1].assistant, '工具后的总结')
+})
