@@ -1,0 +1,74 @@
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { convertToDshEvents } from '../src/importer/convert.js'
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+const turns = [
+  { user: '第一问', assistant: '第一答' },
+  { user: '第二问', assistant: '第二答', tools: [{ name: 'bash', args: { command: 'ls' }, resultText: '文件列表', isError: false }] },
+]
+
+test('生成合法事件流：header + 每轮 turn/step/user/assistant/end', () => {
+  const ev = convertToDshEvents({ id: 'session-test', cwd: '/w', createdAt: 1700000000000, title: 'T', turns })
+  const types = ev.map(e => e.type)
+  assert.equal(types[0], 'session')
+  // 轮1（两段式 step）: turn/start, step/start, user/message, step/end, step/start
+  assert.deepEqual(types.slice(1, 6), ['turn/start', 'step/start', 'user/message', 'step/end', 'step/start'])
+  assert.equal(types.at(-1), 'session/title')
+})
+
+test('seq 从 1 起连续递增；header 无 seq', () => {
+  const ev = convertToDshEvents({ id: 's', cwd: '/w', createdAt: 1700000000000, title: 'T', turns })
+  assert.equal(ev[0].seq, undefined)
+  let expect = 1
+  for (const e of ev.slice(1)) {
+    assert.equal(e.seq, expect++, 'seq 必须连续')
+    assert.equal(typeof e.time, 'number')
+  }
+})
+
+test('user/message 形状匹配宿主契约', () => {
+  const ev = convertToDshEvents({ id: 's', cwd: '/w', createdAt: 0, title: 'T', turns: [turns[0]] })
+  const um = ev.find(e => e.type === 'user/message')
+  assert.equal(um.surfaceOp, 'append')
+  assert.equal(um.data.role, 'user')
+  assert.equal(um.data.source.kind, 'user')
+  assert.ok(UUID_RE.test(um.data.id))
+  assert.deepEqual(um.data.content, [{ type: 'text', text: '第一问' }])
+})
+
+test('assistant 文本走 block-start/text-delta/block-end 三件套', () => {
+  const ev = convertToDshEvents({ id: 's', cwd: '/w', createdAt: 0, title: 'T', turns: [turns[0]] })
+  const chunks = ev.filter(e => e.type === 'assistant/chunk').map(e => e.data.chunk.type)
+  assert.deepEqual(chunks, ['block-start', 'text-delta', 'block-end'])
+  const bs = ev.find(e => e.type === 'assistant/chunk').data.chunk
+  assert.equal(bs.blockType, 'text')
+  const td = ev.filter(e => e.type === 'assistant/chunk')[1].data.chunk
+  assert.equal(td.text, '第一答')
+  const be = ev.filter(e => e.type === 'assistant/chunk')[2].data.chunk
+  assert.deepEqual(be.block, { type: 'text', text: '第一答' })
+})
+
+test('工具调用：tool/call 与 tool/result 配对（sourceEventSeqs 指向调用）', () => {
+  const ev = convertToDshEvents({ id: 's', cwd: '/w', createdAt: 0, title: 'T', turns: [turns[1]] })
+  const call = ev.find(e => e.type === 'tool/call')
+  const result = ev.find(e => e.type === 'tool/result')
+  assert.equal(call.data.name, 'bash')
+  assert.equal(JSON.parse(call.data.arguments).command, 'ls')
+  assert.equal(result.sourceEventSeqs[0], call.seq)
+  assert.equal(result.data.message.source.callId, call.data.callId)
+  const tr = result.data.message.content[0]
+  assert.equal(tr.toolCallId, call.data.callId)
+  assert.equal(tr.isError, false)
+  assert.deepEqual(tr.content, [{ type: 'text', text: '文件列表' }])
+})
+
+test('turn 编号从 1 递增；title 事件带 messageSeqs', () => {
+  const ev = convertToDshEvents({ id: 's', cwd: '/w', createdAt: 0, title: '标题X', turns })
+  const starts = ev.filter(e => e.type === 'turn/start')
+  assert.deepEqual(starts.map(s => s.data.turn), [1, 2])
+  const title = ev.find(e => e.type === 'session/title')
+  assert.equal(title.data.title, '标题X')
+  assert.ok(Array.isArray(title.data.messageSeqs))
+})
