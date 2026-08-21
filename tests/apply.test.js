@@ -34,9 +34,9 @@ test('有 webServer 时注册面板端点；无则挂 inject 兜底', async () =
   // 有 webServer：直接注册
   const ctx1 = mkCtx(true)
   apply(ctx1, opts)
-  assert.equal(routes.length, 6)
+  assert.equal(routes.length, 7)
   // 无 webServer：inject 兜底也注册
   const ctx2 = mkCtx(false)
   apply(ctx2, opts)
-  assert.equal(routes.length, 12)
+  assert.equal(routes.length, 14)
 })
