@@ -40,7 +40,7 @@ const extProvider = {
   }),
 }
 
-test('importOne：走 agents.create 落库，事件含合法 seq 与 header', async () => {
+test('importOne：走 agents.create 落库，meta 带 cwd、seed 为合法事件流', async () => {
   const home = tmpHome()
   const ctx = makeCtx(home)
   const reg = createRegistry([extProvider])
@@ -51,8 +51,8 @@ test('importOne：走 agents.create 落库，事件含合法 seq 与 header', as
   const spec = ctx.__created[0]
   assert.equal(spec.sessionId, r.dshSessionId)
   assert.ok(Array.isArray(spec.seed) && spec.seed.length > 5)
-  assert.equal(spec.seed[0].type, 'session')
-  assert.equal(spec.seed[0].cwd, '/ext/w')
+  assert.equal(spec.seed[0].type, 'turn/start')
+  assert.equal(spec.meta.cwd, '/ext/w')
   // 幂等：重复导入跳过
   const r2 = await importOne(ctx, { registry: reg, provider: extProvider.id, externalId: 'e1', home })
   assert.equal(r2.status, 'already-imported')

@@ -9,18 +9,18 @@ const turns = [
   { user: '第二问', assistant: '第二答', tools: [{ name: 'bash', args: { command: 'ls' }, resultText: '文件列表', isError: false }] },
 ]
 
-test('生成合法事件流：header + 每轮 turn/step/user/assistant/end', () => {
+test('生成合法事件流：首事件是 turn/start（宿主自己写 session 头）', () => {
   const ev = convertToDshEvents({ id: 'session-test', cwd: '/w', createdAt: 1700000000000, title: 'T', turns })
   const types = ev.map(e => e.type)
-  assert.equal(types[0], 'session')
+  assert.equal(types[0], 'turn/start')
+  assert.ok(!types.includes('session'), 'seed 里不得有 session 头（宿主从 meta 写）')
   // 轮1（两段式 step）: turn/start, step/start, user/message, step/end, step/start
-  assert.deepEqual(types.slice(1, 6), ['turn/start', 'step/start', 'user/message', 'step/end', 'step/start'])
+  assert.deepEqual(types.slice(0, 5), ['turn/start', 'step/start', 'user/message', 'step/end', 'step/start'])
   assert.equal(types.at(-1), 'session/title')
 })
 
-test('seq 从 1 起连续递增；header 无 seq', () => {
+test('seq 从 1 起连续递增', () => {
   const ev = convertToDshEvents({ id: 's', cwd: '/w', createdAt: 1700000000000, title: 'T', turns })
-  assert.equal(ev[0].seq, undefined)
   let expect = 1
   for (const e of ev.slice(1)) {
     assert.equal(e.seq, expect++, 'seq 必须连续')
@@ -71,4 +71,19 @@ test('turn 编号从 1 递增；title 事件带 messageSeqs', () => {
   const title = ev.find(e => e.type === 'session/title')
   assert.equal(title.data.title, '标题X')
   assert.ok(Array.isArray(title.data.messageSeqs))
+})
+
+
+test('信封白名单守卫：键只能是宿主七键；seq/time/data 齐备', () => {
+  const ALLOWED = new Set(['type', 'seq', 'time', 'data', 'surfaceOp', 'sourceEventSeqs', 'ignorable'])
+  const ev = convertToDshEvents({ id: 's', cwd: '/w', createdAt: 1700000000000, title: 'T', turns })
+  for (const [i, e] of ev.entries()) {
+    for (const k of Object.keys(e)) {
+      assert.ok(ALLOWED.has(k), 'event ' + i + ' 有非法键 ' + k + '（宿主会拒绝整个 seed）')
+    }
+    assert.equal(typeof e.type, 'string')
+    assert.ok(Number.isSafeInteger(e.seq) && e.seq >= 0)
+    assert.equal(typeof e.time, 'number')
+    assert.notEqual(e.data, undefined)
+  }
 })

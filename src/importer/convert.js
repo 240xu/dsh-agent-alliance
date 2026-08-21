@@ -1,4 +1,4 @@
-// src/importer/convert.js — 外部会话 → DSH 会话事件流（纯函数）。
+// src/importer/convert.js — 外部会话 → DSH 会话事件流（纯函数，不含 session 头）。
 // 事件形状严格对齐宿主落盘契约（2026-08-21 从真实 session.jsonl.zstd 采样固化）：
 //   turn/start{turn} / step/start{turn,step} / user/message{content,source,role,id}+surfaceOp
 //   assistant/chunk{turn,step,chunk:{block-start|text-delta|block-end}}
@@ -8,8 +8,10 @@
 import { randomUUID } from 'node:crypto'
 
 export function convertToDshEvents({ id, cwd, createdAt = Date.now(), title, turns }) {
+  // 注意：seed 里不含 session 头——宿主 agents.create/sessionPersistence 从 meta 自己写头，
+  // 且信封白名单只允许 type/seq/time/data/surfaceOp/sourceEventSeqs/ignorable 七键。
   const events = []
-  events.push({ type: 'session', version: 0, id, createdAt, cwd, delegationDepth: 0 })
+  void id
   let seq = 0
   const next = (time) => ({ seq: ++seq, time })
   const userMessageIds = []
