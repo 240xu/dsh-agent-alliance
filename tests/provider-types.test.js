@@ -19,7 +19,10 @@ test('registry：list/get/detectAll', async () => {
   assert.equal(reg.get('b'), b)
   assert.throws(() => reg.get('nope'), /unknown provider/i)
   const states = await reg.detectAll()
-  // 未实现 detect 的 provider 视为 unknown 而不是炸
-  assert.deepEqual(states.find(s => s.id === 'a'), { id: 'a', available: false, detail: 'no detect()' })
-  assert.deepEqual(states.find(s => s.id === 'b').available, true)
+  const sa = states.find(s => s.id === 'a')
+  assert.equal(sa.available, false)
+  assert.match(sa.detail, /no detect/)
+  const sb = states.find(s => s.id === 'b')
+  assert.equal(sb.available, true)
+  assert.equal(sb.version, '1')
 })
