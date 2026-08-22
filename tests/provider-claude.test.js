@@ -122,3 +122,21 @@ test('exportSession：完整导出规范化 turns（注入跳过 + 工具配对 
   assert.deepEqual(s.turns[1].tools[0], { name: 'Bash', args: { command: 'ls' }, resultText: '输出内容', isError: false })
   assert.equal(s.turns[1].assistant, '工具后的总结')
 })
+
+
+test('exportSession：跳过 sidechain 行（子代理噪声）', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aa-sc-'))
+  const proj = path.join(root, '-w')
+  fs.mkdirSync(proj)
+  const L = (o) => JSON.stringify(o)
+  fs.writeFileSync(path.join(proj, 'fff.jsonl'), [
+    L({ type: 'user', message: { content: [{ type: 'text', text: '主问题' }] } }),
+    L({ isSidechain: true, type: 'user', message: { content: [{ type: 'text', text: '子代理内部提问（噪声）' }] } }),
+    L({ isSidechain: true, type: 'assistant', message: { content: [{ type: 'text', text: '子代理回答（噪声）' }] } }),
+    L({ type: 'assistant', message: { content: [{ type: 'text', text: '主回答' }] } }),
+  ].join('\n'))
+  const p = makeClaudeProvider({ deps: { paths: { grun: '/g', claudeBin: '/b', projectsRoot: root } } })
+  const s = await p.exportSession('fff')
+  assert.equal(s.turns.length, 1)
+  assert.equal(s.turns[0].assistant, '主回答')
+})

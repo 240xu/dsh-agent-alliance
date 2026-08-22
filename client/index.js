@@ -110,7 +110,7 @@ window.__ModuleLoader__.load({
         var b = document.createElement('button');
         b.type = 'button';
         b.setAttribute(ENTRY_ATTR, '');
-        b.innerHTML = '<span>' + ICON + '</span><span>' + T('entry.label') + '</span>';
+        b.innerHTML = '<span>' + ICON + '</span><span data-dsh-aa-label>' + T('entry.label') + '</span>';
         b.addEventListener('click', onToggle);
         return b;
       }
@@ -129,7 +129,12 @@ window.__ModuleLoader__.load({
       var rootEl = sidebarRoot();
       if (rootEl) observer.observe(rootEl, { childList: true });
       else observer.observe(document.body, { childList: true, subtree: true });
-      return function () { observer.disconnect(); if (entry) entry.remove(); entry = null; };
+      var labelSpan = null
+      if (entry) labelSpan = entry.querySelector('[data-dsh-aa-label]')
+      return {
+        dispose: function () { observer.disconnect(); if (entry) entry.remove(); entry = null },
+        setLabel: function (text) { if (labelSpan && entry) labelSpan.textContent = text },
+      }
     }
 
     // ---------- 面板组件 ----------
@@ -290,11 +295,21 @@ window.__ModuleLoader__.load({
     // ---------- 插件对象 ----------
     var inject = ['locale'];
 
+    var sidebarLabelSetter = null
+    var renderPanelRef = null
+
     function apply(ctx) {
       try {
         ctx.effect(function () {
           ctx.locale.register('agent-alliance', DICTS);
           T = ctx.locale.bind('agent-alliance');
+          // 语言实时切换：跟随 locale/change 快照重渲染可见文案
+          if (typeof ctx.on === 'function') {
+            ctx.on('locale/change', function () {
+              if (sidebarLabelSetter) sidebarLabelSetter(T('entry.label'))
+              if (typeof renderPanelRef === 'function') renderPanelRef()
+            })
+          }
         }, 'agent-alliance: dicts');
         ctx.effect(function () {
           ensureStyle();
@@ -304,12 +319,17 @@ window.__ModuleLoader__.load({
           var root = reactDomClient.createRoot(container);
           var open = false;
           var renderPanel = function () { root.render(h(Panel, { open: open, onClose: function () { open = false; renderPanel(); } })); };
-          var disposeEntry = mountSidebarEntry(function () { open = !open; renderPanel(); });
+          var ui = mountSidebarEntry(function () { open = !open; renderPanel(); })
+          var disposeEntry = ui.dispose
+          sidebarLabelSetter = ui.setLabel
+          renderPanelRef = renderPanel
           renderPanel();
           return function () {
-            disposeEntry();
+            disposeEntry()
+            sidebarLabelSetter = null
+            renderPanelRef = null
             try { root.unmount(); } catch (e) { /* already gone */ }
-            container.remove();
+            container.remove()
           };
         }, 'agent-alliance: ui');
       } catch (err) {

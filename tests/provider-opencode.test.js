@@ -83,3 +83,25 @@ test('exportSession：db 完整导出多轮', async () => {
   assert.equal(s.turns[0].assistant, '答E1')
   assert.equal(s.turns[1].user, '问E2')
 })
+
+
+test('exportSession：工具部件映射为 tools 数组（含 error 状态）', async () => {
+  const db = new DatabaseSync(':memory:')
+  db.exec('CREATE TABLE session (id TEXT PRIMARY KEY, directory TEXT, title TEXT, time_created INTEGER, time_updated INTEGER)')
+  db.exec('CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT)')
+  db.exec('CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, data TEXT)')
+  db.prepare('INSERT INTO session VALUES (?,?,?,?,?)').run('ses_t', '/w', 'T', 1, 9)
+  db.prepare('INSERT INTO message VALUES (?,?,?,?)').run('m1', 'ses_t', 1, JSON.stringify({ role: 'user' }))
+  db.prepare('INSERT INTO part VALUES (?,?,?,?,?)').run('p1', 'm1', 'ses_t', 2, JSON.stringify({ type: 'text', text: '问' }))
+  db.prepare('INSERT INTO message VALUES (?,?,?,?)').run('m2', 'ses_t', 3, JSON.stringify({ role: 'assistant' }))
+  db.prepare('INSERT INTO part VALUES (?,?,?,?,?)').run('p2', 'm2', 'ses_t', 4,
+    JSON.stringify({ type: 'tool', tool: 'read', callID: 'c1', state: { status: 'completed', input: { filePath: '/a' }, output: '内容' } }))
+  db.prepare('INSERT INTO part VALUES (?,?,?,?,?)').run('p3', 'm2', 'ses_t', 5,
+    JSON.stringify({ type: 'tool', tool: 'glob', callID: 'c2', state: { status: 'error', input: { pattern: '*' }, error: 'NotFound' } }))
+  const p = makeOpencodeProvider({ deps: { paths: { opencodeBin: BIN }, openDb: () => db } })
+  const s = await p.exportSession('ses_t')
+  assert.equal(s.turns[0].tools.length, 2)
+  assert.deepEqual(s.turns[0].tools[0], { name: 'read', args: { filePath: '/a' }, resultText: '内容', isError: false })
+  assert.equal(s.turns[0].tools[1].isError, true)
+  assert.equal(s.turns[0].tools[1].resultText, 'NotFound')
+})

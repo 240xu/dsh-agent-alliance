@@ -180,6 +180,8 @@ export function makeClaudeProvider({ deps = {} } = {}) {
     for (const o of objs) {
       if (o.type === 'summary' && typeof o.summary === 'string' && !title) { title = o.summary; continue }
       if (typeof o.timestamp === 'string' && !createdAt) createdAt = Date.parse(o.timestamp)
+      // sidechain 行是子代理内部轨迹，导入主会话时视为噪声跳过
+      if (o.isSidechain === true) continue
       if (o.type === 'user') {
         const content = o.message?.content
         const items = Array.isArray(content) ? content : [{ type: 'text', text: typeof content === 'string' ? content : '' }]

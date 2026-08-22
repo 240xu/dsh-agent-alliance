@@ -128,6 +128,18 @@ export function makeOpencodeProvider({ deps = {} } = {}) {
     for (const row of rows) {
       let pdata, mdata
       try { pdata = JSON.parse(row.pdata); mdata = JSON.parse(row.mdata || '{}') } catch { continue }
+      if (pdata?.type === 'tool' && typeof pdata.tool === 'string') {
+        // 工具部件：映射进当前轮的 tools（无轮则先开一轮占位）
+        if (!cur) { cur = { user: undefined, assistant: undefined, tools: [] }; turns.push(cur) }
+        const st = pdata.state || {}
+        cur.tools.push({
+          name: pdata.tool,
+          args: st.input ?? {},
+          resultText: typeof st.output === 'string' ? st.output : String(st.error ?? ''),
+          isError: st.status === 'error',
+        })
+        continue
+      }
       if (pdata?.type !== 'text' || typeof pdata.text !== 'string' || !pdata.text.trim()) continue
       if (mdata.role === 'assistant') {
         if (!cur) { cur = { user: undefined, assistant: undefined, tools: [] }; turns.push(cur) }
