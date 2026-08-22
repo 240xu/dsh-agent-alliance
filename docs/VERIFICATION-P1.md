@@ -73,3 +73,14 @@
   - 结论：插件机制端到端正确；实际可用性取决于各 agent 自身配置与额度
 - ✅ zcode：模板适配器按规范预留（默认 disabled）
 - ⏳ 面板视觉确认：侧边栏「Agent 协同」入口 + 三标签页，待用户在浏览器点验
+
+## 原生嵌入（新目标，2026-08-22）
+
+- ✅ 主题修复：面板样式改骑 --dsw-alias-bg-base / --dsw-alias-label-* / --dsw-alias-border-l* 等真实皮肤令牌（此前用了不存在的 bg-primary 导致回退硬编码深色）→ ca142c8
+- ✅ 原生子代理嵌入路径确认并落地：
+  - DSH 官方 @deepseek-ai/dsh-subagent-acp（进程外 ACP 后端）+ opencode acp 内建 server
+  - profile 已挂载：providerName 'opencode'（env 已修 TMPDIR）
+  - 原生形态工具挂载：subagent_opencode = dsh-tool-subagent 固定 provider:'opencode'，agentOptions.model 钉实验模型 opencode/x-preview-f-free（用户指定免费实验模型）
+  - ACP 裸握手探针实测：initialize → session/new → session/prompt → agent_message_chunk 流式回包全通
+  - 待用户 GUI 点验：新会话应可见 subagent_opencode 工具；侧边栏配色应跟随皮肤
+- 后续可选：claude 走 @zed-industries/claude-code-acp（依赖本地代理 9316 运行）；codex 无内建 ACP，需社区适配器或自写桥
