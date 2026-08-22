@@ -183,3 +183,31 @@ test('agent_import：导入成功并幂等', async () => {
   assert.equal(out2.status, 'already-imported')
 })
 function tmpHome() { return fs.mkdtempSync(path.join(os.tmpdir(), 'aa-tools-')) }
+
+
+test('UI 卡片：dispatch 用 terminal 卡，后台确认用 generic', () => {
+  const { ctx, registered } = mockCtx()
+  registerTools(ctx, { registry: createRegistry([fakeProvider]), config })
+  const tool = registered.find(x => x.name === 'agent_dispatch')
+  const call = tool.presentCall({ provider: 'fake', prompt: '任务X' }, {})
+  assert.equal(call.card, 'terminal')
+  assert.match(call.title, /fake/)
+  const bgCall = tool.presentCall({ provider: 'fake', prompt: '长任务', background: true }, {})
+  assert.equal(bgCall.card, 'generic')
+  assert.equal(bgCall.kind, 'execute')
+  const res = tool.presentResult({ provider: 'fake', prompt: 'p' }, { content: [{ type: 'text', text: '回答内容' }], isError: false })
+  assert.equal(res.card, 'terminal')
+  assert.equal(res.output, '回答内容')
+})
+
+test('UI 卡片：import 与 roundtable 有 generic 卡', () => {
+  const { ctx, registered } = mockCtx()
+  registerTools(ctx, { registry: createRegistry([fakeProvider]), config })
+  const imp = registered.find(x => x.name === 'agent_import')
+  const c = imp.presentCall({ provider: 'fake', sessionId: 's9' }, {})
+  assert.equal(c.card, 'generic')
+  assert.match(c.title, /fake.*s9|s9.*fake/)
+  const rt = registered.find(x => x.name === 'agent_roundtable')
+  const rc = rt.presentCall({ prompt: '问题Q' }, {})
+  assert.equal(rc.card, 'generic')
+})

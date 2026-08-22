@@ -50,6 +50,33 @@ export function registerTools(ctx, { registry, config, home }) {
         return [{ type: 'text', text: JSON.stringify(value) }]
       },
     },
+    presentCall(args) {
+      const label = labelOf(args.prompt)
+      if (args.background === true) {
+        return {
+          card: 'generic',
+          title: args.provider + ': ' + label,
+          kind: 'execute',
+          rawInput: String(args.prompt || ''),
+          content: [{ type: 'text', text: '后台派发给 ' + args.provider + '，用 job_output 取结果' }],
+        }
+      }
+      return {
+        card: 'terminal',
+        title: args.provider + ': ' + label,
+        description: '外部 agent 子代理派发' + (args.resumeSessionId ? '（续聊 ' + args.resumeSessionId + '）' : ''),
+        ...(args.cwd ? { cwd: args.cwd } : {}),
+      }
+    },
+    presentResult(args, result) {
+      const block = result.content.length === 1 ? result.content[0] : undefined
+      if (block === undefined || block.type !== 'text') return undefined
+      return {
+        card: 'terminal',
+        output: block.text,
+        ...(result.isError ? {} : { exitCode: 0 }),
+      }
+    },
     async execute(args, exec) {
       const provider = registry.get(String(args.provider || '').trim())
       const signal = exec?.signal
@@ -125,6 +152,15 @@ export function registerTools(ctx, { registry, config, home }) {
         if (value && typeof value.text === 'string') return [{ type: 'text', text: value.text }]
         return [{ type: 'text', text: JSON.stringify(value) }]
       },
+    },
+    presentCall(args) {
+      return {
+        card: 'generic',
+        title: 'roundtable: ' + labelOf(args.prompt),
+        kind: 'execute',
+        rawInput: String(args.prompt || ''),
+        content: [{ type: 'text', text: '并发派发给全部可用 agent，完成后输出对比文本' }],
+      }
     },
     async execute(args, exec) {
       const signal = exec?.signal
@@ -266,6 +302,15 @@ export function registerTools(ctx, { registry, config, home }) {
         if (value.status === 'skipped') return [{ type: 'text', text: '跳过：' + (value.reason || '') }]
         return [{ type: 'text', text: JSON.stringify(value) }]
       },
+    },
+    presentCall(args) {
+      return {
+        card: 'generic',
+        title: '导入 ' + args.provider + '/' + args.sessionId,
+        kind: 'execute',
+        rawInput: JSON.stringify(args),
+        content: [{ type: 'text', text: '把外部会话事件级还原为 DSH 会话（幂等）' }],
+      }
     },
     async execute(args) {
       const r = await importOne(ctx, {
