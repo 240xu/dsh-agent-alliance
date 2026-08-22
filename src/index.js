@@ -11,7 +11,7 @@ import { registerHttp } from './http.js'
 
 const name = 'agent-alliance'
 // home 用于导入台账（~/.dsh/agent-alliance/imports.json）
-const inject = ['tools']
+const inject = ['tools', 'jobs']
 
 function apply(ctx, overrides = {}) {
   try {
