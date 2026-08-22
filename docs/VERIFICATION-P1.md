@@ -92,3 +92,10 @@
 - ✅ ③面板 i18n：DICTS(zh/en) 经 ctx.locale 注册 + bind 跟随客户端语言；client.js 下发已确认含 DICTS 与 locale.register
 - ✅ ④claude ACP：@zed-industries/claude-code-acp@0.16.2 安装并以 node 直驱挂载（providerName 'claude'），启动零错误；实际运行需本地代理 9316 在线
 - ✅ ⑤job 展示：后台派发为原生 job（kind agent-alliance），job_output/job_kill 通用控制
+
+## 发布记录
+
+- 公开仓库: https://github.com/gh218/dsh-agent-alliance （2026-08-22）
+- 发布前处置: git filter-branch 重写全部历史（清除早期夹具中的真实 codex 会话 UUID，6 处→0）、
+  refs/original+reflog+gc 剪枝、补 MIT LICENSE、package.json 指向公开主页
+- 发布后偏执验证: 全新克隆扫描（工作区+全历史）凭据/隐私零命中；48 文件
