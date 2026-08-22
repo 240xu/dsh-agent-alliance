@@ -60,3 +60,16 @@
 - [ ] 协调重启：激活 6 工具（运行中实例仍是 4 工具旧版）
 - [ ] 在线验证：import_scan 真实扫描 + import 一条真实会话 + dispatch 探针（需额度同意）
 - [ ] P4 Web 面板（client 入口须过 manifest-guard 守卫测试）
+
+## 最终在线验证（2026-08-22 09:27 重启后）
+
+- ✅ 6 工具注册（宿主日志）；7 端点注册（late webServer 日志）
+- ✅ 导入全链路：agent_import_scan → agent_import（45 轮真实会话）→ 幂等 → **宿主严格校验器通过**
+  - 过程中发现并修复三个落盘契约问题：信封七键白名单、seq 从 0 连续、turn/end 必须带 completed reason、头必须含 version
+- ✅ HTTP 端点实测：/state 返回四家探测数据；client.js 200
+- ✅ dispatch 机制实测（探针）：
+  - claude：flags/流式解析/session_id 捕获/错误传播全正确；API 层 Connection refused —— 用户本地代理 127.0.0.1:9316 未运行（settings.json ANTHROPIC_BASE_URL），属用户环境
+  - opencode：CLI 建会话+JSON 流正常；其默认模型 go/claude-fable-5 在当前配置不存在，属用户环境
+  - 结论：插件机制端到端正确；实际可用性取决于各 agent 自身配置与额度
+- ✅ zcode：模板适配器按规范预留（默认 disabled）
+- ⏳ 面板视觉确认：侧边栏「Agent 协同」入口 + 三标签页，待用户在浏览器点验
