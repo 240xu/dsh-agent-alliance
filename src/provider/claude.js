@@ -39,10 +39,11 @@ export function makeClaudeProvider({ deps = {} } = {}) {
   }
 
   async function dispatch({ prompt, cwd, resumeSessionId, model, timeoutMs = 300000, signal }) {
-    const argv = [paths.grun, paths.claudeBin, '-p', String(prompt), '--output-format', 'stream-json']
+    const argv = [paths.grun, paths.claudeBin, '-p', String(prompt), '--output-format', 'stream-json', '--verbose']
     if (resumeSessionId) argv.push('--resume', String(resumeSessionId))
     if (model) argv.push('--model', String(model))
-    const r = await spawnCli({ argv, cwd, timeoutMs, signal })
+    // Termux 无 /tmp，grun 二进制会写 /tmp/claude-*：强制 TMPDIR 归一
+    const r = await spawnCli({ argv, cwd, timeoutMs, signal, env: { TMPDIR: prefix() + '/tmp' } })
     if (r.code !== 0 && !r.stdout.trim()) {
       throw new Error('claude dispatch 失败 (exit ' + r.code + '): ' + (r.stderr || '').slice(-400))
     }

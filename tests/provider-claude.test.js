@@ -24,7 +24,7 @@ test('dispatch：argv 组装正确（grun 包装 + stream-json）', async () => 
   const p = makeClaudeProvider({ deps: { spawnCli, paths: { grun: GRUN, claudeBin: BIN } } })
   const out = await p.dispatch({ prompt: '问题X' })
   assert.equal(calls.length, 1)
-  assert.deepEqual(calls[0].argv, [GRUN, BIN, '-p', '问题X', '--output-format', 'stream-json'])
+  assert.deepEqual(calls[0].argv, [GRUN, BIN, '-p', '问题X', '--output-format', 'stream-json', '--verbose'])
   assert.equal(out.text, '答A')
   assert.equal(out.externalSessionId, 's-1')
 })
