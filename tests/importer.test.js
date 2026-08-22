@@ -107,3 +107,49 @@ test('agents 服务缺失时回退 sessionPersistence', async () => {
   assert.equal(r.status, 'imported')
   assert.deepEqual(calls.map(c => c[0]), ['create', 'append'])
 })
+
+
+test('importOne：真实 cwd 会归组到工作区；主目录候选跳过', async () => {
+  const home = tmpHome()
+  const calls = []
+  const mkCtx = (extCwd) => ({
+    get(name) {
+      if (name === 'sessionPersistence') {
+        return {
+          create: async () => {},
+          append: async () => {},
+        }
+      }
+      if (name === 'workspaceRegistry') {
+        return {
+          resolveByPath: async (p) => { calls.push(['resolve', p]); return p === '/ext/w' ? { attachSession: async (id) => calls.push(['attach', id]) } : null },
+          create: async (p) => { calls.push(['createWs', p]); return { attachSession: async (id) => calls.push(['attach', id]) } },
+        }
+      }
+      return undefined
+    },
+  })
+  const reg = createRegistry([extProvider])
+  // extProvider.exportSession 返回 cwd:'/ext/w'
+  const r = await importOne(mkCtx(), { registry: reg, provider: 'ext', externalId: 'w1', home })
+  assert.equal(r.status, 'imported')
+  assert.ok(calls.some(c => c[0] === 'resolve' && c[1] === '/ext/w'))
+  assert.ok(calls.some(c => c[0] === 'attach'))
+})
+
+test('cwd 为主目录时不归组（REQ-39 同款防护）', async () => {
+  const home = tmpHome()
+  const calls = []
+  const homeLike = os.homedir()
+  const prov = { ...extProvider, exportSession: async () => ({ title: 'T', createdAt: 1, cwd: homeLike, turns: [{ user: 'u' }] }) }
+  const ctx = {
+    get(name) {
+      if (name === 'sessionPersistence') return { create: async () => {}, append: async () => {} }
+      if (name === 'workspaceRegistry') return { resolveByPath: async (p) => { calls.push(p); return null }, create: async () => null }
+      return undefined
+    },
+  }
+  const r = await importOne(ctx, { registry: createRegistry([prov]), provider: 'ext', externalId: 'h1', home })
+  assert.equal(r.status, 'imported')
+  assert.ok(!calls.includes(homeLike), '不应以主目录解析工作区')
+})

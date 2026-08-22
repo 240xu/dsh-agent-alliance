@@ -8,6 +8,31 @@ window.__ModuleLoader__.load({
     var reactDomClient = require('react-dom/client');
     var h = react.createElement;
 
+    // ---------- i18n（跟随客户端语言；字典在 apply 里经 locale 服务注册） ----------
+    var DICTS = {
+      zh: {
+        'entry.label': 'Agent 协同',
+        'panel.title': 'Agent 协同',
+        'tab.state': '状态', 'tab.sessions': '外部会话', 'tab.dispatch': '派发任务', 'tab.roundtable': '圆桌',
+        'sess.all': '全部', 'sess.view': '查看', 'sess.import': '导入', 'sess.imported': '已导入',
+        'sess.none': '（无会话）', 'sess.loading': '加载中…', 'sess.preview': '内容预览', 'sess.collapse': '收起',
+        'disp.run': '派发', 'disp.running': '执行中…', 'disp.ph': '任务描述…',
+        'rt.launch': '发起圆桌', 'rt.running': '圆桌进行中…', 'rt.ph': '圆桌问题…',
+        'state.online': '● 在线', 'state.offline': '● 离线', 'common.close': '✕'
+      },
+      en: {
+        'entry.label': 'Agent Alliance',
+        'panel.title': 'Agent Alliance',
+        'tab.state': 'State', 'tab.sessions': 'Sessions', 'tab.dispatch': 'Dispatch', 'tab.roundtable': 'Roundtable',
+        'sess.all': 'All', 'sess.view': 'View', 'sess.import': 'Import', 'sess.imported': 'Imported',
+        'sess.none': '(no sessions)', 'sess.loading': 'Loading…', 'sess.preview': 'Preview', 'sess.collapse': 'Collapse',
+        'disp.run': 'Dispatch', 'disp.running': 'Running…', 'disp.ph': 'Task description…',
+        'rt.launch': 'Start roundtable', 'rt.running': 'Roundtable running…', 'rt.ph': 'Roundtable question…',
+        'state.online': '● online', 'state.offline': '● offline', 'common.close': '✕'
+      }
+    };
+    var T = function (k) { return (DICTS.zh[k] !== undefined ? DICTS.zh : DICTS.en)[k] || k };
+
     // ---------- 样式（<style> 注入，aaa- 前缀隔离） ----------
     var CSS = [
       '[data-dsh-aa-entry]{display:flex;align-items:center;gap:8px;width:100%;padding:7px 10px;margin:2px 0;border:none;border-radius:8px;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;font-size:13px;text-align:left}',
@@ -85,7 +110,7 @@ window.__ModuleLoader__.load({
         var b = document.createElement('button');
         b.type = 'button';
         b.setAttribute(ENTRY_ATTR, '');
-        b.innerHTML = '<span>' + ICON + '</span><span>Agent 协同</span>';
+        b.innerHTML = '<span>' + ICON + '</span><span>' + T('entry.label') + '</span>';
         b.addEventListener('click', onToggle);
         return b;
       }
@@ -120,8 +145,8 @@ window.__ModuleLoader__.load({
         st.providers.map(function (p) {
           return h('div', { key: p.id, className: 'aaa-card' },
             h('div', null, h('b', null, p.label || p.id), ' ',
-              p.available ? h('span', { className: 'aaa-ok' }, '● 在线' + (p.version ? ' ' + p.version : ''))
-                          : h('span', { className: 'aaa-bad' }, '● 离线')),
+              p.available ? h('span', { className: 'aaa-ok' }, T('state.online') + (p.version ? ' ' + p.version : ''))
+                          : h('span', { className: 'aaa-bad' }, T('state.offline'))),
             p.detail ? h('div', { className: 'aaa-dim' }, String(p.detail).slice(0, 140)) : null);
         }));
     }
@@ -161,25 +186,25 @@ window.__ModuleLoader__.load({
       };
       return h('div', null,
         h('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '10px' } },
-          h('button', { className: 'aaa-btn', onClick: function () { set(function (c) { return Object.assign({}, c, { filter: '' }); }); load(''); } }, '全部'),
+          h('button', { className: 'aaa-btn', onClick: function () { set(function (c) { return Object.assign({}, c, { filter: '' }); }); load(''); } }, T('sess.all')),
           st.providers.map(function (p) {
             return h('button', { key: p.id, className: 'aaa-btn', onClick: function () { set(function (c) { return Object.assign({}, c, { filter: p.id }); }); load(p.id); } }, p.id);
           }),
-          st.busy ? h('span', { className: 'aaa-dim' }, '加载中…') : null),
+          st.busy ? h('span', { className: 'aaa-dim' }, T('sess.loading')) : null),
         st.msg ? h('div', { style: { margin: '6px 0' } }, st.msg) : null,
         st.sessions.slice(0, 40).map(function (x) {
           return h('div', { key: x.provider + '/' + x.id, className: 'aaa-row' },
             h('span', { className: 'aaa-tag' }, x.provider),
             h('span', { style: { flex: '1', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: x.id },
-              (x.title || '(无标题)') + (x.cwd ? '　@' + x.cwd : '')),
+              (x.title || T('sess.none')) + (x.cwd ? '　@' + x.cwd : '')),
             x.imported ? h('span', { className: 'aaa-dim' }, '已导入') : null,
-            h('button', { className: 'aaa-btn', onClick: function () { openContent(x.provider, x.id); } }, '查看'),
-            h('button', { className: 'aaa-btn', disabled: !!x.imported, onClick: function () { doImport(x.provider, x.id); } }, x.imported ? '已导入' : '导入'));
+            h('button', { className: 'aaa-btn', onClick: function () { openContent(x.provider, x.id); } }, T('sess.view')),
+            h('button', { className: 'aaa-btn', disabled: !!x.imported, onClick: function () { doImport(x.provider, x.id); } }, x.imported ? T('sess.imported') : T('sess.import')));
         }),
-        !st.sessions.length ? h('div', { className: 'aaa-dim' }, '（无会话）') : null,
+        !st.sessions.length ? h('div', { className: 'aaa-dim' }, T('sess.none')) : null,
         st.content ? h('div', { className: 'aaa-card', style: { marginTop: '10px' } },
-          h('div', null, h('b', null, '内容预览'), ' ',
-            h('button', { className: 'aaa-btn', onClick: function () { set(function (c) { return Object.assign({}, c, { content: null }); }); } }, '收起')),
+          h('div', null, h('b', null, T('sess.preview')), ' ',
+            h('button', { className: 'aaa-btn', onClick: function () { set(function (c) { return Object.assign({}, c, { content: null }); }); } }, T('sess.collapse'))),
           st.content.error ? h('div', { className: 'aaa-bad' }, st.content.error)
             : st.content.loading ? h('div', { className: 'aaa-dim' }, '加载中…')
             : h('pre', { className: 'aaa-pre' },
@@ -205,9 +230,9 @@ window.__ModuleLoader__.load({
           h('select', { className: 'aaa-select', style: { width: '160px' }, value: st.provider, onChange: function (e) { upd({ provider: e.target.value }); } },
             ['claude', 'codex', 'opencode'].map(function (p) { return h('option', { key: p, value: p }, p); })),
           h('span', { className: 'aaa-dim' }, '⚠ 真实消耗该 agent 的 API 额度')),
-        h('textarea', { className: 'aaa-textarea', placeholder: '任务描述…', value: st.prompt, onChange: function (e) { upd({ prompt: e.target.value }); } }),
+        h('textarea', { className: 'aaa-textarea', placeholder: T('disp.ph'), value: st.prompt, onChange: function (e) { upd({ prompt: e.target.value }); } }),
         h('div', { style: { marginTop: '8px' } },
-          h('button', { className: 'aaa-btn', disabled: st.busy, onClick: run }, st.busy ? '执行中…' : '派发')),
+          h('button', { className: 'aaa-btn', disabled: st.busy, onClick: run }, st.busy ? T('disp.running') : T('disp.run'))),
         st.result ? h('pre', { className: 'aaa-pre', style: { marginTop: '10px' } }, st.result) : null);
     }
 
@@ -238,7 +263,7 @@ window.__ModuleLoader__.load({
         h('textarea', { className: 'aaa-textarea', placeholder: '圆桌问题…', value: st.prompt, onChange: function (e) { upd({ prompt: e.target.value }); } }),
         h('div', { style: { marginTop: '8px' } },
           h('button', { className: 'aaa-btn', disabled: st.busy || st.running, onClick: run },
-            st.running ? '圆桌进行中…' : '发起圆桌'),
+            st.running ? T('rt.running') : T('rt.launch')),
           st.jobId ? h('span', { className: 'aaa-dim', style: { marginLeft: '8px' } }, 'job ' + st.jobId) : null),
         st.err ? h('div', { className: 'aaa-bad', style: { marginTop: '8px' } }, st.err) : null,
         st.output ? h('pre', { className: 'aaa-pre', style: { marginTop: '10px' } }, st.output) : null);
@@ -252,21 +277,25 @@ window.__ModuleLoader__.load({
       return h('div', { className: 'aaa-overlay', onClick: props.onClose },
         h('div', { className: 'aaa-panel', onClick: function (e) { e.stopPropagation(); } },
           h('div', { className: 'aaa-head' },
-            h('span', { className: 'aaa-title' }, 'Agent 协同'),
-            h('button', { className: 'aaa-close', onClick: props.onClose }, '✕')),
+            h('span', { className: 'aaa-title' }, T('panel.title')),
+            h('button', { className: 'aaa-close', onClick: props.onClose }, T('common.close'))),
           h('div', { className: 'aaa-tabs' },
             ['state', 'sessions', 'dispatch', 'roundtable'].map(function (t) {
               return h('button', { key: t, className: 'aaa-tab', 'data-active': tab === t ? '1' : '0', onClick: function () { setTab(t); } },
-                t === 'state' ? '状态' : t === 'sessions' ? '外部会话' : t === 'roundtable' ? '圆桌' : '派发任务');
+                T(t === 'state' ? 'tab.state' : t === 'sessions' ? 'tab.sessions' : t === 'roundtable' ? 'tab.roundtable' : 'tab.dispatch'));
             })),
           h('div', { className: 'aaa-body' }, body)));
     }
 
     // ---------- 插件对象 ----------
-    var inject = [];
+    var inject = ['locale'];
 
     function apply(ctx) {
       try {
+        ctx.effect(function () {
+          ctx.locale.register('agent-alliance', DICTS);
+          T = ctx.locale.bind('agent-alliance');
+        }, 'agent-alliance: dicts');
         ctx.effect(function () {
           ensureStyle();
           var container = document.createElement('div');

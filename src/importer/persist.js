@@ -8,6 +8,11 @@ import { homedir } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { convertToDshEvents } from './convert.js'
 
+function isHomePath(p) {
+  const h = homedir()
+  return p === h || p === h + '/'
+}
+
 export function ledgerPath(home) {
   return join(home || (process.env.DSH_HOME || join(homedir(), '.dsh')), 'agent-alliance', 'imports.json')
 }
@@ -64,6 +69,17 @@ export async function importOne(ctx, { registry, provider: providerId, externalI
     const proj = ctx.get('sessionProjectionCache')
     if (proj && typeof proj.coldSnapshot === 'function') {
       try { await proj.coldSnapshot(dshSessionId) } catch { /* 预热失败不影响落盘 */ }
+    }
+    // 工作区归组（对齐 chat-import REQ-39/70）：真实 cwd 才解析；主目录跳过
+    if (cwd && !isHomePath(cwd)) {
+      try {
+        const wr = ctx.get('workspaceRegistry')
+        if (wr && typeof wr.resolveByPath === 'function') {
+          let ws = await wr.resolveByPath(cwd)
+          if (!ws && typeof wr.create === 'function') ws = await wr.create(cwd)
+          if (ws && typeof ws.attachSession === 'function') await ws.attachSession(dshSessionId)
+        }
+      } catch { /* 归组失败不影响导入 */ }
     }
   } else {
     const agents = ctx.get('agents')
