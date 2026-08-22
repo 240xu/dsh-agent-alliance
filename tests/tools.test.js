@@ -211,3 +211,39 @@ test('UI 卡片：import 与 roundtable 有 generic 卡', () => {
   const rc = rt.presentCall({ prompt: '问题Q' }, {})
   assert.equal(rc.card, 'generic')
 })
+
+
+test('maxConcurrent 并发上限：在飞数量不超过配置值', async () => {
+  let inflight = 0, peak = 0
+  const slow = (id) => ({
+    ...fakeProvider, id,
+    dispatch: async () => {
+      inflight++; peak = Math.max(peak, inflight)
+      await new Promise(r => setTimeout(r, 60))
+      inflight--
+      return { text: 'done-' + id }
+    },
+  })
+  const { ctx, registered } = mockCtx()
+  registerTools(ctx, { registry: createRegistry([slow('a'), slow('b'), slow('c')]), config: { providers: {}, defaults: { timeoutMs: 30000, maxConcurrent: 2 } } })
+  const tool = registered.find(x => x.name === 'agent_dispatch')
+  await Promise.all([1, 2, 3].map(i =>
+    tool.execute({ provider: i === 1 ? 'a' : i === 2 ? 'b' : 'c', prompt: 'p' + i }, { signal: new AbortController().signal })))
+  assert.ok(peak <= 2, 'peak=' + peak + ' 应 ≤ maxConcurrent=2')
+})
+
+test('排队中被 abort：前台等待应快速失败而不是无限等', async () => {
+  const blocker = { ...fakeProvider, id: 'blk', dispatch: async () => { await new Promise(r => setTimeout(r, 400)); return { text: 'x' } } }
+  const { ctx, registered } = mockCtx()
+  registerTools(ctx, { registry: createRegistry([blocker]), config: { providers: {}, defaults: { timeoutMs: 30000, maxConcurrent: 1 } } })
+  const tool = registered.find(x => x.name === 'agent_dispatch')
+  // 先占满唯一名额
+  const first = tool.execute({ provider: 'blk', prompt: 'first' }, { signal: new AbortController().signal })
+  await new Promise(r => setTimeout(r, 30))
+  // 第二个进入队列；50ms 后取消
+  const ac = new AbortController()
+  const second = tool.execute({ provider: 'blk', prompt: 'second' }, { signal: ac.signal })
+  setTimeout(() => ac.abort(), 50)
+  await assert.rejects(() => second, /aborted while queued/i)
+  await first
+})

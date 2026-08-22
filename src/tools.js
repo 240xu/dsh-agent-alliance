@@ -11,6 +11,47 @@ function lossless(value) {
   return JSON.parse(JSON.stringify(value ?? null))
 }
 
+// 并发信号量：限制同时派发到外部 agent 的在飞数量（maxConcurrent）。
+// 排队期间 signal 中止会立即以错误出队，不会占位死等。
+function createSemaphore(limit) {
+  let active = 0
+  const queue = []
+  return {
+    run(signal, fn) {
+      return new Promise((resolveRun, rejectRun) => {
+        let started = false
+        const entry = {
+          begin() {
+            if (started) return
+            started = true
+            if (signal && onAbort) signal.removeEventListener('abort', onAbort)
+            // 同步启动 fn：若调用方在 run() 返回后立即 cancel，abort 必须能被 fn 看到
+            let fp
+            try { fp = Promise.resolve(fn()) } catch (err) { fp = Promise.reject(err) }
+            fp.then(resolveRun, rejectRun).finally(() => {
+              active--
+              if (queue.length) queue.shift().begin()
+            })
+          },
+        }
+        function onAbort() {
+          const i = queue.indexOf(entry)
+          if (i >= 0) queue.splice(i, 1)
+          if (signal) signal.removeEventListener('abort', onAbort)
+          rejectRun(new Error('aborted while queued (maxConcurrent=' + limit + ')'))
+        }
+        entry.onAbort = onAbort
+        if (active < limit) { active++; entry.begin(); return }
+        queue.push(entry)
+        if (signal) {
+          if (signal.aborted) onAbort()
+          else signal.addEventListener('abort', onAbort, { once: true })
+        }
+      })
+    },
+  }
+}
+
 function labelOf(prompt) {
   const s = String(prompt || '').replace(/\s+/g, ' ').trim()
   return s.length > 60 ? s.slice(0, 60) + '…' : s
@@ -19,6 +60,7 @@ function labelOf(prompt) {
 export function registerTools(ctx, { registry, config, home }) {
   const defaults = config?.defaults || {}
   const defaultTimeout = defaults.timeoutMs || 300000
+  const sem = createSemaphore(Math.max(1, Number(defaults.maxConcurrent) || 3))
 
   ctx.tools.register(defineTool({
     name: 'agent_dispatch',
@@ -91,14 +133,14 @@ export function registerTools(ctx, { registry, config, home }) {
           outputLimitBytes: 65536,
           run() {
             const t0 = Date.now()
-            provider.dispatch({
+            sem.run(ac.signal, () => provider.dispatch({
               prompt: String(args.prompt),
               cwd: args.cwd || defaults.defaultCwd || undefined,
               resumeSessionId: args.resumeSessionId || undefined,
               model: args.model || undefined,
               timeoutMs: defaultTimeout,
               signal: ac.signal,
-            }).then((out) => {
+            })).then((out) => {
               doneResolve({ status: 'completed', output: '[' + args.provider + (out.externalSessionId ? ' 会话 ' + out.externalSessionId : '') + ' 用时 ' + (Date.now() - t0) + 'ms]\n' + out.text })
             }, (err) => {
               doneResolve({ status: 'failed', detail: String(err?.message || err).slice(-500) })
@@ -111,16 +153,16 @@ export function registerTools(ctx, { registry, config, home }) {
         })
         return { kind: 'background', jobId: handle.id }
       }
-      // 前台：与 exec.signal 耦合
+      // 前台：与 exec.signal 耦合；排队等待同样可被取消
       const t0 = Date.now()
-      const out = await provider.dispatch({
+      const out = await sem.run(signal, () => provider.dispatch({
         prompt: String(args.prompt),
         cwd: args.cwd || defaults.defaultCwd || undefined,
         resumeSessionId: args.resumeSessionId || undefined,
         model: args.model || undefined,
         timeoutMs: Math.min(Number(args.timeoutMs) || defaultTimeout, defaultTimeout * 4),
         signal,
-      })
+      }))
       return lossless({
         provider: provider.id,
         text: out.text,
