@@ -8,7 +8,7 @@ import { loadLedger, sourceKey } from './importer/persist.js'
 import { importOne } from './importer/persist.js'
 import { runRoundtable, formatRoundtableText } from './roundtable.js'
 
-export function registerHttp(host, { registry, config, home, getAgents, startJob }) {
+export function registerHttp(host, { registry, config, home, ctx, getAgents, startJob }) {
   const roundtables = new Map() // id -> {output?|running}
   // getAgents（可选，测试注入）：返回宿主 agents 服务；缺省走 ctx 之外无法拿到——
   // 生产路径由 index.js 闭包提供 ctx.get('agents')。
@@ -106,10 +106,15 @@ export function registerHttp(host, { registry, config, home, getAgents, startJob
       let args = {}
       try { args = JSON.parse((await readBody(req)) || '{}') } catch { sendJson(res, 400, { error: 'bad json body' }); return }
       try {
-        const r = await importOne(
-          { get: (name) => name === 'agents' && getAgents ? getAgents() : undefined },
-          { registry, provider: String(args.provider || ''), externalId: String(args.sessionId || ''), home },
-        )
+        // 面板导入必须拿到宿主真实服务（sessionPersistence/agents）——
+        // 用调用方传入的 ctx；getAgents 仅作测试注入口
+        const ioCtx = ctx ?? { get: (name) => name === 'agents' && getAgents ? getAgents() : undefined }
+        const r = await importOne(ioCtx, {
+          registry,
+          provider: String(args.provider || ''),
+          externalId: String(args.sessionId || ''),
+          home,
+        })
         sendJson(res, 200, r)
       } catch (err) {
         sendJson(res, 500, { error: String(err?.message || err).slice(-400) })

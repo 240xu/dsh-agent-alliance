@@ -124,3 +124,21 @@ test('POST dispatch：成功返回文本；错误方法 405', async () => {
   assert.equal(ok.status, 200)
   assert.equal(ok.json.text, 'R:hi')
 })
+
+
+test('POST import：经真实 ctx 走 persistence 直写（面板修复回归）', async () => {
+  const created = []
+  const p = { ...okProvider, exportSession: async () => ({ title: 'T', createdAt: 1, cwd: '/w', turns: [{ user: 'u', assistant: 'a' }] }) }
+  const host = mockHost()
+  const fakeCtx = {
+    get(name) {
+      if (name === 'sessionPersistence') return { create: async () => {}, append: async () => {} }
+      if (name === 'sessionProjectionCache') return { coldSnapshot: async () => {} }
+      return undefined
+    },
+  }
+  registerHttp(host, { registry: createRegistry([p]), config: { defaults: {} }, home: tmpHome(), ctx: fakeCtx })
+  const r = await host.handle('POST', '/__agent-alliance/import', { provider: 'p1', sessionId: 'sx' })
+  assert.equal(r.status, 200)
+  assert.equal(r.json.status, 'imported')
+})

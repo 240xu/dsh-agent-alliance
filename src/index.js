@@ -25,7 +25,7 @@ function apply(ctx, overrides = {}) {
     }
     const home = process.env.DSH_HOME || join(homedir(), '.dsh')
     const registry = buildProviders({ config })
-    const opts = { registry, config, home }
+    const opts = { registry, config, home, ctx }
     registerTools(ctx, opts)
 
     // 面板端点（可选 webServer）：终端 profile 不挂；web 面出现时经 inject 兜底注册
