@@ -99,3 +99,10 @@
 - 发布前处置: git filter-branch 重写全部历史（清除早期夹具中的真实 codex 会话 UUID，6 处→0）、
   refs/original+reflog+gc 剪枝、补 MIT LICENSE、package.json 指向公开主页
 - 发布后偏执验证: 全新克隆扫描（工作区+全历史）凭据/隐私零命中；48 文件
+
+## 保真度回归（2026-08-22 19:58 重启后）
+
+- ✅ 大会话导入：opencode ses_081fe…（番茄逆向）466 轮 / **9368 对 tool_call↔tool_result** /
+  23197 事件，9.5s 落盘；宿主严格校验零结构问题；幂等 15ms
+- ✅ maxConcurrent 信号量已随重启上线（单元覆盖：上限/排队取消/竞态修复）
+- ✅ 面板 i18n + locale 实时切换随重启上线（client.js 下发已含 DICTS）
