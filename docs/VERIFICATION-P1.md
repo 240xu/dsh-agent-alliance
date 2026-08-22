@@ -87,7 +87,7 @@
 
 ## 深度兼容轮验证（2026-08-22 15:30 重启后）
 
-- ✅ ①工作区归组：59 轮真实导入 e50325f6 已入 workspace.json 记账（REQ-39 主目录防护同款）
+- ✅ ①工作区归组：59 轮真实导入 <导入会话A> 已入 workspace.json 记账（REQ-39 主目录防护同款）
 - ✅ ②UI 卡片：dispatch(terminal/generic)、roundtable(generic)、import(generic) 按 dsh-tool-bash 同款 API 实现
 - ✅ ③面板 i18n：DICTS(zh/en) 经 ctx.locale 注册 + bind 跟随客户端语言；client.js 下发已确认含 DICTS 与 locale.register
 - ✅ ④claude ACP：@zed-industries/claude-code-acp@0.16.2 安装并以 node 直驱挂载（providerName 'claude'），启动零错误；实际运行需本地代理 9316 在线
