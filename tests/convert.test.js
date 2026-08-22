@@ -64,10 +64,14 @@ test('工具调用：tool/call 与 tool/result 配对（sourceEventSeqs 指向�
   assert.deepEqual(tr.content, [{ type: 'text', text: '文件列表' }])
 })
 
-test('turn 编号从 1 递增；title 事件带 messageSeqs', () => {
+test('turn 编号从 1 递增；turn/end 带 completed reason；title 带 messageSeqs', () => {
   const ev = convertToDshEvents({ id: 's', cwd: '/w', createdAt: 0, title: '标题X', turns })
   const starts = ev.filter(e => e.type === 'turn/start')
   assert.deepEqual(starts.map(s => s.data.turn), [1, 2])
+  for (const te of ev.filter(e => e.type === 'turn/end')) {
+    assert.deepEqual(te.data.reason, { kind: 'completed' })
+    assert.deepEqual(Object.keys(te.data).sort(), ['reason', 'turn'])
+  }
   const title = ev.find(e => e.type === 'session/title')
   assert.equal(title.data.title, '标题X')
   assert.ok(Array.isArray(title.data.messageSeqs))

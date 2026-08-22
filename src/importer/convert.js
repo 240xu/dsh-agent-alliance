@@ -68,7 +68,7 @@ export function convertToDshEvents({ createdAt = Date.now(), title, turns }) {
       push(base + 10, 'step/end', { turn, step: 2 })
     }
 
-    push(base + 11, 'turn/end', { turn })
+    push(base + 11, 'turn/end', { turn, reason: { kind: 'completed' } })
   }
 
   push(createdAt + list.length * 1000 + 12, 'session/title', {
