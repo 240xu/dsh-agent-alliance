@@ -151,7 +151,8 @@ export function registerTools(ctx, { registry, config, home }) {
             }
           },
         })
-        return { kind: 'background', jobId: handle.id }
+        // 宿主句柄字段名可能为 id/jobId：双取并 lossless 化
+        return lossless({ kind: 'background', jobId: handle?.id ?? handle?.jobId ?? null })
       }
       // 前台：与 exec.signal 耦合；排队等待同样可被取消
       const t0 = Date.now()

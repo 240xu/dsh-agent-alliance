@@ -247,3 +247,13 @@ test('排队中被 abort：前台等待应快速失败而不是无限等', async
   await assert.rejects(() => second, /aborted while queued/i)
   await first
 })
+
+
+test('后台返回值 lossless：句柄缺 id 字段时不产生 undefined', async () => {
+  const { ctx, registered } = mockCtx()
+  registerTools(ctx, { registry: createRegistry([fakeProvider]), config })
+  const tool = registered.find(x => x.name === 'agent_dispatch')
+  const out = await tool.execute({ provider: 'fake', prompt: 'x', background: true }, { agent: { id: 'a' }, signal: new AbortController().signal })
+  assert.deepEqual(out, JSON.parse(JSON.stringify(out)))
+  assert.ok(!JSON.stringify(out).includes('undefined'))
+})
