@@ -97,7 +97,7 @@ export function registerTools(ctx, { registry, config, home }) {
       if (args.background === true) {
         return {
           card: 'generic',
-          title: args.provider + ': ' + label,
+          title: args.provider + ': ' + labelOf(args.prompt),
           kind: 'execute',
           rawInput: String(args.prompt || ''),
           content: [{ type: 'text', text: '后台派发给 ' + args.provider + '，用 job_output 取结果' }],
@@ -151,8 +151,7 @@ export function registerTools(ctx, { registry, config, home }) {
             }
           },
         })
-        // 宿主句柄字段名可能为 id/jobId：双取并 lossless 化
-        return lossless({ kind: 'background', jobId: handle?.id ?? handle?.jobId ?? null })
+        return lossless({ kind: 'background', jobId: handle })
       }
       // 前台：与 exec.signal 耦合；排队等待同样可被取消
       const t0 = Date.now()
@@ -211,7 +210,7 @@ export function registerTools(ctx, { registry, config, home }) {
         let doneResolve
         const done = new Promise((res) => { doneResolve = res })
         const ac = new AbortController()
-        const handle = ctx.jobs.start({
+        const rtJobIdHandle = ctx.jobs.start({
           kind: 'agent-alliance',
           label: 'roundtable: ' + labelOf(args.prompt),
           owner: exec?.agent,
@@ -231,7 +230,7 @@ export function registerTools(ctx, { registry, config, home }) {
             return { cancel(reason) { ac.abort(new Error(reason || 'cancelled')) }, done }
           },
         })
-        return { kind: 'background', jobId: handle.id }
+        return lossless({ kind: 'background', jobId: rtJobIdHandle })
       }
       const r = await runRoundtable({
         registry, prompt: String(args.prompt),

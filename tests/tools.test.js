@@ -11,7 +11,7 @@ function mockCtx() {
   const jobsStarted = []
   const ctx = {
     tools: { register: (t) => registered.push(t) },
-    jobs: { start: (spec) => { jobsStarted.push(spec); return { id: 'job-9' } } },
+    jobs: { start: (spec) => { jobsStarted.push(spec); return 'job-9' } },
   }
   return { ctx, registered, jobsStarted }
 }
