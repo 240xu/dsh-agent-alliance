@@ -56,7 +56,9 @@ window.__ModuleLoader__.load({
       '.aaa-select,.aaa-textarea{width:100%;box-sizing:border-box;background:var(--dsw-specific-input-major,var(--dsw-alias-bg-base));color:var(--dsw-alias-label-primary);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:7px 9px;font-size:13px;font-family:inherit}',
       '.aaa-textarea{min-height:90px;resize:vertical}',
       '.aaa-pre{white-space:pre-wrap;word-break:break-word;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l1);border-radius:8px;padding:10px;max-height:300px;overflow:auto;color:var(--dsw-alias-label-primary)}',
-      '.aaa-tag{font-size:11px;padding:1px 7px;border-radius:99px;border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary)}'
+      '.aaa-tag{font-size:11px;padding:1px 7px;border-radius:99px;border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary)}',
+      '.aaa-modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:99999}',
+      '.aaa-modal-card{background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l1);border-radius:14px;max-width:760px;width:min(92vw,760px);max-height:82vh;overflow:auto;padding:16px;box-shadow:var(--dsw-shadow-lv3)}'
     ].join('\n');
 
     function ensureStyle() {
@@ -207,13 +209,27 @@ window.__ModuleLoader__.load({
             h('button', { className: 'aaa-btn', disabled: !!x.imported, onClick: function () { doImport(x.provider, x.id); } }, x.imported ? T('sess.imported') : T('sess.import')));
         }),
         !st.sessions.length ? h('div', { className: 'aaa-dim' }, T('sess.none')) : null,
-        st.content ? h('div', { className: 'aaa-card', style: { marginTop: '10px' } },
-          h('div', null, h('b', null, T('sess.preview')), ' ',
-            h('button', { className: 'aaa-btn', onClick: function () { set(function (c) { return Object.assign({}, c, { content: null }); }); } }, T('sess.collapse'))),
-          st.content.error ? h('div', { className: 'aaa-bad' }, st.content.error)
-            : st.content.loading ? h('div', { className: 'aaa-dim' }, '加载中…')
-            : h('pre', { className: 'aaa-pre' },
-                ((st.content.data && st.content.data.messages) || []).map(function (m) { return '[' + m.role + '] ' + m.text; }).join('\n\n')))
+        st.content ? h('div', { className: 'aaa-modal', onClick: function (e) { if (e.target === e.currentTarget) set(function (c) { return Object.assign({}, c, { content: null }); }); } },
+          h('div', { className: 'aaa-modal-card' },
+            h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' } },
+              h('b', null, (st.content.data && st.content.data.title) || T('sess.preview')),
+              h('button', { className: 'aaa-btn', onClick: function () { set(function (c) { return Object.assign({}, c, { content: null }); }); } }, T('common.close'))),
+            st.content.error ? h('div', { className: 'aaa-bad' }, st.content.error)
+              : st.content.loading ? h('div', { className: 'aaa-dim' }, T('sess.loading'))
+              : ((st.content.data && st.content.data.messages) || []).length === 0 ? h('div', { className: 'aaa-dim' }, T('sess.none'))
+              : ((st.content.data.messages) || []).map(function (m, mi) {
+                  var mine = m.role === 'user';
+                  return h('div', { key: mi, style: { display: 'flex', justifyContent: mine ? 'flex-end' : 'flex-start', margin: '6px 0' } },
+                    h('div', {
+                      style: {
+                        maxWidth: '86%', padding: '8px 12px', borderRadius: '12px', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                        fontSize: '13px', lineHeight: '1.55',
+                        background: mine ? 'var(--dsw-specific-input-major)' : 'var(--dsw-alias-bg-base)',
+                        border: mine ? 'none' : '1px solid var(--dsw-alias-border-l1)',
+                        color: 'var(--dsw-alias-label-primary)',
+                      },
+                    }, m.text));
+                })))
           : null);
     }
 
