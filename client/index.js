@@ -18,7 +18,9 @@ window.__ModuleLoader__.load({
         'sess.none': '（无会话）', 'sess.loading': '加载中…', 'sess.preview': '内容预览', 'sess.collapse': '收起',
         'disp.run': '派发', 'disp.running': '执行中…', 'disp.ph': '任务描述…',
         'rt.launch': '发起圆桌', 'rt.running': '圆桌进行中…', 'rt.ph': '圆桌问题…',
-        'state.online': '● 在线', 'state.offline': '● 离线', 'common.close': '✕'
+        'state.online': '● 在线', 'state.offline': '● 离线', 'common.close': '✕',
+        'mode.single': '单发', 'mode.bc': '广播对比', 'bc.need': '广播模式请先在下方勾选至少一个 agent', 'bc.copy': '复制', 'disp.target': '目标',
+        'pick.title': '参与协同的 Agent', 'pick.none': '（无可用 agent）', 'rt.sel': '参与方'
       },
       en: {
         'entry.label': 'Agent Alliance',
@@ -57,6 +59,12 @@ window.__ModuleLoader__.load({
       '.aaa-textarea{min-height:90px;resize:vertical}',
       '.aaa-pre{white-space:pre-wrap;word-break:break-word;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l1);border-radius:8px;padding:10px;max-height:300px;overflow:auto;color:var(--dsw-alias-label-primary)}',
       '.aaa-tag{font-size:11px;padding:1px 7px;border-radius:99px;border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary)}',
+      '.aaa-pick{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}',
+      '.aaa-pick-card{display:flex;align-items:center;gap:8px;padding:7px 12px;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;cursor:pointer;user-select:none;color:var(--dsw-alias-label-primary);font-size:13px}',
+      '.aaa-pick-on{border-color:var(--dsw-alias-state-success-primary);box-shadow:inset 0 0 0 1px var(--dsw-alias-state-success-primary)}',
+      '.aaa-pick-off{opacity:.45;cursor:not-allowed}',
+      '.aaa-cmp{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}',
+      '.aaa-cmp-card{flex:1 1 250px;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;padding:10px;background:var(--dsw-alias-bg-base)}',
       '.aaa-modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:99999}',
       '.aaa-modal-card{background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l1);border-radius:14px;max-width:760px;width:min(92vw,760px);max-height:82vh;overflow:auto;padding:16px;box-shadow:var(--dsw-shadow-lv3)}'
     ].join('\n');
@@ -67,6 +75,48 @@ window.__ModuleLoader__.load({
       el.id = 'dsh-aa-style';
       el.textContent = CSS;
       document.head.appendChild(el);
+    }
+
+    // ---------- Agent 多选存储（跨标签共享 + localStorage 持久化） ----------
+    var SEL_KEY = 'dsh.agentAlliance.selected.v1'
+    function selLoad() { try { return JSON.parse(localStorage.getItem(SEL_KEY) || '[]') } catch (e) { return [] } }
+    function selSave(arr) { try { localStorage.setItem(SEL_KEY, JSON.stringify(arr)) } catch (e) {} }
+
+    function AgentPicker() {
+      var s = react.useState({ list: null });
+      var st = s[0], set = s[1];
+      var sel = react.useState(selLoad());
+      var selected = sel[0], setSelected = sel[1];
+      react.useEffect(function () {
+        getState().then(function (r) {
+          var ps = (r.json && r.json.providers || []).filter(function (p) { return p.available !== false; });
+          set({ list: ps });
+          // 清理已下线的选中项
+          var ids = ps.map(function (p) { return p.id; });
+          var cleaned = selected.filter(function (x) { return ids.indexOf(x) >= 0; });
+          if (cleaned.length !== selected.length) { setSelected(cleaned); selSave(cleaned); }
+        }, function () { set({ list: [] }); });
+      }, []);
+      var toggle = function (id) {
+        var next = selected.indexOf(id) >= 0 ? selected.filter(function (x) { return x !== id; }) : selected.concat([id]);
+        setSelected(next); selSave(next);
+      };
+      var list = st.list;
+      if (!list) return h('div', { className: 'aaa-dim', style: { marginBottom: '10px' } }, T('sess.loading'));
+      return h('div', { className: 'aaa-pick' },
+        h('span', { className: 'aaa-dim', style: { alignSelf: 'center' } }, T('pick.title') + '：'),
+        list.length === 0 ? h('span', { className: 'aaa-dim' }, T('pick.none')) :
+        list.map(function (p) {
+          var on = selected.indexOf(p.id) >= 0;
+          return h('div', {
+            key: p.id,
+            className: 'aaa-pick-card' + (on ? ' aaa-pick-on' : ''),
+            onClick: function () { toggle(p.id); },
+          },
+            h('span', { style: { color: 'var(--dsw-alias-state-success-primary)' } }, '●'),
+            h('span', null, p.id),
+            on ? h('span', { style: { color: 'var(--dsw-alias-state-success-primary)' } }, '✓') : null);
+        }));
     }
 
     // ---------- API ----------
@@ -234,11 +284,34 @@ window.__ModuleLoader__.load({
     }
 
     function DispatchTab() {
-      var s = react.useState({ provider: 'claude', prompt: '', result: null, busy: false });
+      var s = react.useState({ mode: 'single', provider: 'opencode', prompt: '', result: null, busy: false, broadcast: null });
       var st = s[0], set = s[1];
       var upd = function (patch) { set(function (cur) { return Object.assign({}, cur, patch); }); };
+      var avail = react.useState([]);
+      var providers = avail[0];
+      react.useEffect(function () {
+        getState().then(function (r) {
+          var ps = ((r.json && r.json.providers) || []).filter(function (p) { return p.available !== false; }).map(function (p) { return p.id; });
+          if (ps.length) upd({ provider: ps.indexOf(st.provider) >= 0 ? st.provider : ps[0] });
+        }, function () {});
+      }, []);
       var run = function () {
         if (!st.prompt.trim()) return;
+        if (st.mode === 'bc') {
+          var sel = selLoad();
+          if (!sel.length) { upd({ bcErr: T('bc.need') }); return; }
+          upd({ busy: true, bcErr: null, broadcast: sel.map(function (p) { return { p: p, status: 'running' }; }), result: null });
+          sel.forEach(function (p) {
+              var t0 = Date.now();
+            postDispatch({ provider: p, prompt: st.prompt }).then(function (r) {
+              var entry = { p: p, status: r.status === 200 ? 'ok' : 'err', text: r.status === 200 ? r.json.text : (((r.json || {}).error) || ('HTTP ' + r.status)), sid: r.status === 200 ? r.json.externalSessionId : null, ms: Date.now() - t0 };
+              set(function (cur) { var arr = (cur.broadcast || []).slice(); var i2 = arr.findIndex(function (x) { return x.p === p; }); if (i2 >= 0) arr[i2] = entry; return Object.assign({}, cur, { broadcast: arr }); });
+            }, function () {
+              set(function (cur) { var arr = (cur.broadcast || []).slice(); var i2 = arr.findIndex(function (x) { return x.p === p; }); if (i2 >= 0) arr[i2] = { p: p, status: 'err', text: '请求失败', ms: Date.now() - t0 }; return Object.assign({}, cur, { broadcast: arr }); });
+            });
+          });
+          return;
+        }
         upd({ busy: true, result: null });
         postDispatch({ provider: st.provider, prompt: st.prompt }).then(function (r) {
           upd({ busy: false, result: r.status === 200
@@ -246,15 +319,37 @@ window.__ModuleLoader__.load({
             : ('失败：' + ((r.json && r.json.error) || r.status)) });
         }, function () { upd({ busy: false, result: '请求失败' }); });
       };
+      var copyText = function (text) {
+        try { navigator.clipboard.writeText(text); } catch (e) {}
+      };
       return h('div', null,
-        h('div', { style: { display: 'flex', gap: '8px', marginBottom: '8px', alignItems: 'center' } },
-          h('select', { className: 'aaa-select', style: { width: '160px' }, value: st.provider, onChange: function (e) { upd({ provider: e.target.value }); } },
-            ['claude', 'codex', 'opencode'].map(function (p) { return h('option', { key: p, value: p }, p); })),
+        h(AgentPicker),
+        h('div', { style: { display: 'flex', gap: '8px', marginBottom: '8px', alignItems: 'center', flexWrap: 'wrap' } },
+          h('div', { style: { display: 'flex', gap: '0' } },
+            ['single', 'bc'].map(function (m) {
+              var on = st.mode === m;
+              return h('button', { key: m, className: 'aaa-btn', style: on ? { borderColor: 'var(--dsw-alias-state-success-primary)' } : {}, onClick: function () { upd({ mode: m }); } }, T(m === 'single' ? 'mode.single' : 'mode.bc'));
+            })),
+          st.mode === 'single' ? h('select', { className: 'aaa-select', style: { width: '160px' }, value: st.provider, onChange: function (e) { upd({ provider: e.target.value }); } },
+            (providers.length ? providers : [st.provider]).map(function (p) { return h('option', { key: p, value: p }, p); })) : null,
           h('span', { className: 'aaa-dim' }, '⚠ 真实消耗该 agent 的 API 额度')),
         h('textarea', { className: 'aaa-textarea', placeholder: T('disp.ph'), value: st.prompt, onChange: function (e) { upd({ prompt: e.target.value }); } }),
+        st.bcErr ? h('div', { className: 'aaa-bad', style: { marginTop: '8px' } }, st.bcErr) : null,
         h('div', { style: { marginTop: '8px' } },
           h('button', { className: 'aaa-btn', disabled: st.busy, onClick: run }, st.busy ? T('disp.running') : T('disp.run'))),
-        st.result ? h('pre', { className: 'aaa-pre', style: { marginTop: '10px' } }, st.result) : null);
+        st.mode === 'single' && st.result ? h('pre', { className: 'aaa-pre', style: { marginTop: '10px' } }, st.result) : null,
+        st.mode === 'bc' && st.broadcast ? h('div', { className: 'aaa-cmp' },
+          st.broadcast.map(function (x) {
+            return h('div', { key: x.p, className: 'aaa-cmp-card' },
+              h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' } },
+                h('b', null, x.p),
+                x.status === 'ok' ? h('span', { className: 'aaa-dim' }, Math.round(x.ms / 100) / 10 + 's') :
+                  x.status === 'running' ? h('span', { className: 'aaa-dim' }, '…') : h('span', { className: 'aaa-bad' }, '失败')),
+              h('div', { style: { whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: '13px', lineHeight: '1.55', maxHeight: '300px', overflow: 'auto', color: 'var(--dsw-alias-label-primary)' } },
+                x.status === 'running' ? '…' : x.text),
+              x.status === 'ok' ? h('div', { style: { marginTop: '6px', textAlign: 'right' } },
+                h('button', { className: 'aaa-btn', onClick: function () { copyText(x.text); } }, T('bc.copy'))) : null);
+          })) : null);
     }
 
     function RoundtableTab() {
@@ -272,7 +367,7 @@ window.__ModuleLoader__.load({
       var run = function () {
         if (!st.prompt.trim()) return;
         upd({ busy: true });
-        api('/roundtable', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: st.prompt }) })
+        api('/roundtable', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: st.prompt, providers: selLoad().length ? selLoad() : undefined }) })
           .then(function (r) {
             if (r.status !== 200) { upd({ busy: false, err: (r.json && r.json.error) || r.status }); return; }
             upd({ busy: false, jobId: r.json.jobId, running: true });
@@ -280,7 +375,8 @@ window.__ModuleLoader__.load({
           }, function () { upd({ busy: false, err: '请求失败' }); });
       };
       return h('div', null,
-        h('div', { className: 'aaa-dim', style: { marginBottom: '8px' } }, '⚠ 并发派发给全部可用 agent，真实消耗各家额度'),
+        h(AgentPicker),
+        h('div', { className: 'aaa-dim', style: { marginBottom: '8px' } }, '⚠ 并发派发给选中的 agent（未选则全部可用），真实消耗各家额度'),
         h('textarea', { className: 'aaa-textarea', placeholder: '圆桌问题…', value: st.prompt, onChange: function (e) { upd({ prompt: e.target.value }); } }),
         h('div', { style: { marginTop: '8px' } },
           h('button', { className: 'aaa-btn', disabled: st.busy || st.running, onClick: run },
