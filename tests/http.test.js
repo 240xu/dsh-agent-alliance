@@ -53,7 +53,7 @@ test('POST roundtable：经 jobs.start 启动，GET 可轮询直至完成', asyn
   assert.match(r2.json.output, /桌答:评审这个设计/)
 })
 
-test('注册六个端点', () => {
+test('注册九个端点', () => {
   const host = mockHost()
   registerHttp(host, { registry: createRegistry([okProvider]), config: { defaults: {} }, home: tmpHome() })
   const paths = host.routes.map(r => r.path).sort()
@@ -65,6 +65,9 @@ test('注册六个端点', () => {
     '/__agent-alliance/session-content',
     '/__agent-alliance/sessions',
     '/__agent-alliance/state',
+    '/__agent-alliance/task-kill',
+    '/__agent-alliance/task-output',
+    '/__agent-alliance/tasks',
   ])
 })
 
@@ -141,4 +144,32 @@ test('POST import：经真实 ctx 走 persistence 直写（面板修复回归）
   const r = await host.handle('POST', '/__agent-alliance/import', { provider: 'p1', sessionId: 'sx' })
   assert.equal(r.status, 200)
   assert.equal(r.json.status, 'imported')
+})
+
+
+test('任务中心三端点：list 过滤 kind / read 输出 / kill 取消', async () => {
+  const fakeJobs = {
+    list: () => [
+      { id: 'agent-alliance-1', kind: 'agent-alliance', label: 'x', status: 'running' },
+      { id: 'bash-9', kind: 'bash', label: 'y', status: 'completed' },
+    ],
+    read: (id) => { if (id !== 'agent-alliance-1') throw new Error('unknown job'); return { text: '输出内容', snapshot: { status: 'completed' } } },
+    kill: () => 'requested',
+  }
+  const p = { ...okProvider }
+  const host = mockHost()
+  const fakeCtx = { get: () => undefined, jobs: fakeJobs }
+  registerHttp(host, { registry: createRegistry([p]), config: { defaults: {} }, home: tmpHome(), ctx: fakeCtx })
+  const l = await host.handle('GET', '/__agent-alliance/tasks')
+  assert.equal(l.status, 200)
+  assert.equal(l.json.tasks.length, 1)
+  assert.equal(l.json.tasks[0].id, 'agent-alliance-1')
+  const o = await host.handle('GET', '/__agent-alliance/task-output?id=agent-alliance-1')
+  assert.equal(o.status, 200)
+  assert.equal(o.json.text, '输出内容')
+  const nf = await host.handle('GET', '/__agent-alliance/task-output?id=nope')
+  assert.equal(nf.status, 404)
+  const k = await host.handle('POST', '/__agent-alliance/task-kill', { id: 'agent-alliance-1' })
+  assert.equal(k.status, 200)
+  assert.equal(k.json.outcome, 'requested')
 })

@@ -183,6 +183,7 @@ export function registerTools(ctx, { registry, config, home }) {
       prompt: { type: 'string', required: true, description: '发给所有参与 agent 的同一问题' },
       providers: { type: 'array', description: '参与的 provider id 列表（缺省全部）', items: { type: 'string' } },
       cwd: { type: 'string', description: '工作目录' },
+      rounds: { type: 'integer', description: '辩论轮数（1-3，越界自动钳制；≥2 时后续轮可见其他 agent 上一轮发言）', default: 1 },
       background: { type: 'boolean', description: '默认 true；false 时前台等待全部返回' },
     },
     output: {
@@ -217,7 +218,7 @@ export function registerTools(ctx, { registry, config, home }) {
           outputLimitBytes: 262144,
           run() {
             runRoundtable({
-              registry, prompt: String(args.prompt),
+              registry, prompt: String(args.prompt), rounds: args.rounds,
               providerIds: Array.isArray(args.providers) ? args.providers.map(String) : undefined,
               cwd: args.cwd || defaults.defaultCwd || undefined,
               timeoutMs: defaultTimeout * 2,
@@ -233,7 +234,7 @@ export function registerTools(ctx, { registry, config, home }) {
         return lossless({ kind: 'background', jobId: rtJobIdHandle })
       }
       const r = await runRoundtable({
-        registry, prompt: String(args.prompt),
+        registry, prompt: String(args.prompt), rounds: args.rounds,
         providerIds: Array.isArray(args.providers) ? args.providers.map(String) : undefined,
         cwd: args.cwd || defaults.defaultCwd || undefined,
         timeoutMs: defaultTimeout * 2,

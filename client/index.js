@@ -20,7 +20,8 @@ window.__ModuleLoader__.load({
         'rt.launch': '发起圆桌', 'rt.running': '圆桌进行中…', 'rt.ph': '圆桌问题…',
         'state.online': '● 在线', 'state.offline': '● 离线', 'common.close': '✕',
         'mode.single': '单发', 'mode.bc': '广播对比', 'bc.need': '广播模式请先在下方勾选至少一个 agent', 'bc.copy': '复制', 'disp.target': '目标',
-        'pick.title': '参与协同的 Agent', 'pick.none': '（无可用 agent）', 'rt.sel': '参与方'
+        'pick.title': '参与协同的 Agent', 'pick.none': '（无可用 agent）', 'rt.sel': '参与方',
+        'tab.tasks': '任务', 'task.none': '（暂无后台任务）', 'task.output': '输出', 'task.kill': '取消', 'task.done': '已完成'
       },
       en: {
         'entry.label': 'Agent Alliance',
@@ -30,7 +31,8 @@ window.__ModuleLoader__.load({
         'sess.none': '(no sessions)', 'sess.loading': 'Loading…', 'sess.preview': 'Preview', 'sess.collapse': 'Collapse',
         'disp.run': 'Dispatch', 'disp.running': 'Running…', 'disp.ph': 'Task description…',
         'rt.launch': 'Start roundtable', 'rt.running': 'Roundtable running…', 'rt.ph': 'Roundtable question…',
-        'state.online': '● online', 'state.offline': '● offline', 'common.close': '✕'
+        'state.online': '● online', 'state.offline': '● offline', 'common.close': '✕',
+        'tab.tasks': 'Tasks', 'task.none': '(no background tasks)', 'task.output': 'Output', 'task.kill': 'Kill', 'task.done': 'done'
       }
     };
     var T = function (k) { return (DICTS.zh[k] !== undefined ? DICTS.zh : DICTS.en)[k] || k };
@@ -65,6 +67,9 @@ window.__ModuleLoader__.load({
       '.aaa-pick-off{opacity:.45;cursor:not-allowed}',
       '.aaa-cmp{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}',
       '.aaa-cmp-card{flex:1 1 250px;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;padding:10px;background:var(--dsw-alias-bg-base)}',
+      '.aaa-taskrow{display:flex;align-items:center;gap:10px;padding:8px 4px;border-bottom:1px solid var(--dsw-alias-border-l1);font-size:13px}',
+      '.aaa-dot{width:8px;height:8px;border-radius:50%;flex:none}',
+      '.aaa-taskout{margin:6px 0 10px 18px;}',
       '.aaa-modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:99999}',
       '.aaa-modal-card{background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l1);border-radius:14px;max-width:760px;width:min(92vw,760px);max-height:82vh;overflow:auto;padding:16px;box-shadow:var(--dsw-shadow-lv3)}'
     ].join('\n');
@@ -390,18 +395,73 @@ window.__ModuleLoader__.load({
       var ts = react.useState('state');
       var tab = ts[0], setTab = ts[1];
       if (!props.open) return null;
-      var body = tab === 'state' ? h(StateTab) : tab === 'sessions' ? h(SessionsTab) : tab === 'roundtable' ? h(RoundtableTab) : h(DispatchTab);
+      var body = tab === 'state' ? h(StateTab) : tab === 'sessions' ? h(SessionsTab) : tab === 'roundtable' ? h(RoundtableTab) : tab === 'tasks' ? h(TasksTab) : h(DispatchTab);
       return h('div', { className: 'aaa-overlay', onClick: props.onClose },
         h('div', { className: 'aaa-panel', onClick: function (e) { e.stopPropagation(); } },
           h('div', { className: 'aaa-head' },
             h('span', { className: 'aaa-title' }, T('panel.title')),
             h('button', { className: 'aaa-close', onClick: props.onClose }, T('common.close'))),
           h('div', { className: 'aaa-tabs' },
-            ['state', 'sessions', 'dispatch', 'roundtable'].map(function (t) {
+            ['state', 'sessions', 'dispatch', 'roundtable', 'tasks'].map(function (t) {
               return h('button', { key: t, className: 'aaa-tab', 'data-active': tab === t ? '1' : '0', onClick: function () { setTab(t); } },
-                T(t === 'state' ? 'tab.state' : t === 'sessions' ? 'tab.sessions' : t === 'roundtable' ? 'tab.roundtable' : 'tab.dispatch'));
+                T('tab.' + t));
             })),
           h('div', { className: 'aaa-body' }, body)));
+    }
+
+    // ---------- 后台任务中心 ----------
+    function TasksTab() {
+      var s = react.useState({ tasks: null, openId: null, outs: {} });
+      var st = s[0], set = s[1];
+      var upd = function (patch) { set(function (cur) { return Object.assign({}, cur, patch); }); };
+      react.useEffect(function () {
+        var alive = true;
+        var load = function () {
+          api('/tasks').then(function (r) {
+            if (!alive) return;
+            var arr = (r.json && r.json.tasks) || [];
+            arr.reverse(); // 最新在上
+            upd({ tasks: arr });
+          }, function () {});
+        };
+        load();
+        var iv = setInterval(load, 2500);
+        return function () { alive = false; clearInterval(iv); };
+      }, []);
+      var statusColor = function (st2) {
+        if (st2 === 'running' || st2 === 'starting') return 'var(--dsw-alias-state-success-primary)';
+        if (st2 === 'failed' || st2 === 'killed') return 'var(--dsw-alias-state-error-primary)';
+        return 'var(--dsw-alias-label-tertiary)';
+      };
+      var toggleOut = function (id) {
+        if (st.openId === id) { upd({ openId: null }); return; }
+        upd({ openId: id });
+        api('/task-output?id=' + encodeURIComponent(id)).then(function (r) {
+          upd(function (cur) {
+            var outs = Object.assign({}, cur.outs);
+            outs[id] = r.status === 200 ? (r.json.text || T('sess.none')) : ((r.json && r.json.error) || ('HTTP ' + r.status));
+            return Object.assign({}, cur, { outs: outs });
+          });
+        }, function () { upd(function (cur) { var o = Object.assign({}, cur.outs); o[id] = '请求失败'; return Object.assign({}, cur, { outs: o }); }); });
+      };
+      var kill = function (id) {
+        api('/task-kill', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: id }) }).then(function () {});
+      };
+      var tasks = st.tasks;
+      return h('div', null,
+        !tasks ? h('div', { className: 'aaa-dim' }, T('sess.loading')) :
+        tasks.length === 0 ? h('div', { className: 'aaa-dim' }, T('task.none')) :
+        tasks.map(function (tk) {
+          return h('div', { key: tk.id },
+            h('div', { className: 'aaa-taskrow' },
+              h('span', { className: 'aaa-dot', style: { background: statusColor(tk.status) } }),
+              h('span', { style: { flex: '1', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+                h('span', null, tk.label),
+                h('span', { className: 'aaa-dim', style: { marginLeft: '8px', fontSize: '11px' } }, tk.id)),
+              h('button', { className: 'aaa-btn', onClick: function () { toggleOut(tk.id); } }, T('task.output')),
+              (tk.status === 'running' || tk.status === 'starting') ? h('button', { className: 'aaa-btn', onClick: function () { kill(tk.id); } }, T('task.kill')) : null),
+            st.openId === tk.id ? h('pre', { className: 'aaa-pre aaa-taskout' }, st.outs[tk.id] !== undefined ? st.outs[tk.id] : T('sess.loading')) : null);
+        }));
     }
 
     // ---------- 插件对象 ----------

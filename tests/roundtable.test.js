@@ -56,3 +56,48 @@ test('formatRoundtable 输出对比文本', async () => {
   assert.match(text, /\[bad\].*失败/s)
 })
 import { formatRoundtableText } from '../src/roundtable.js'
+
+
+test('辩论轮数：第 2 轮 prompt 携带其他 agent 的上一轮发言', async () => {
+  const seen = []
+  const spy = (id, text) => ({
+    id, label: id,
+    dispatch: async ({ prompt }) => { seen.push({ id, prompt }); return { text: text + '<<<' + id } },
+  })
+  const reg = createRegistry([spy('a', '观点A'), spy('b', '观点B')])
+  const r = await runRoundtable({ registry: reg, prompt: '问题Q', providerIds: ['a', 'b'], rounds: 2 })
+  assert.equal(r.debate.length, 2)
+  assert.equal(r.debate[0].round, 1)
+  assert.equal(r.debate[1].round, 2)
+  // 第 2 轮 a 收到的 prompt 应包含 b 的第 1 轮发言，反之亦然
+  const pA = seen.filter(x => x.id === 'a')[1].prompt
+  const pB = seen.filter(x => x.id === 'b')[1].prompt
+  assert.match(pA, /【b】[\s\S]*观点B/)
+  assert.match(pB, /【a】[\s\S]*观点A/)
+  assert.match(pA, /第2轮辩论/)
+})
+
+test('失败隔离：失败者不进入下一轮历史，但仍参与下一轮提问？——不：仅成功者续轮', async () => {
+  const seen = []
+  const mk = (id) => ({
+    id, label: id,
+    dispatch: async ({ prompt }) => {
+      seen.push(id)
+      if (id === 'bad') throw new Error('x')
+      return { text: 'ok-' + id }
+    },
+  })
+  const reg = createRegistry([mk('good'), mk('bad')])
+  const r = await runRoundtable({ registry: reg, prompt: 'q', providerIds: ['good', 'bad'], rounds: 2 })
+  // 第 2 轮只有成功者 good 继续
+  assert.equal(r.debate[1].entries.length, 1)
+  assert.equal(r.debate[1].entries[0].provider, 'good')
+})
+
+test('rounds 越界钳制到 1..3', async () => {
+  let calls = 0
+  const counter = { id: 'c', label: 'c', dispatch: async () => { calls++; return { text: 't' } } }
+  const reg = createRegistry([counter])
+  await runRoundtable({ registry: reg, prompt: 'q', providerIds: ['c'], rounds: 99 })
+  assert.equal(calls, 3)
+})

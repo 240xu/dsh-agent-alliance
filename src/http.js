@@ -80,6 +80,57 @@ export function registerHttp(host, { registry, config, home, ctx, getAgents, sta
     },
   })
 
+  // ---- 后台任务中心：列出 / 读输出 / 取消（kind=agent-alliance）----
+  function jobsSvc() {
+    if (!ctx || !ctx.jobs) return null
+    return ctx.jobs
+  }
+  host.register({
+    kind: 'exact',
+    path: '/__agent-alliance/tasks',
+    handler: async (req, res) => {
+      if (req.method !== 'GET') { sendJson(res, 405, { error: 'method not allowed' }); return }
+      const jobs = jobsSvc()
+      if (!jobs) { sendJson(res, 501, { error: 'jobs service unavailable' }); return }
+      try {
+        const snap = jobs.list().filter(s => s.kind === 'agent-alliance').slice(-100)
+          .map(s => ({ id: s.id, label: s.label, status: s.status }))
+        sendJson(res, 200, { tasks: snap })
+      } catch (err) { sendJson(res, 500, { error: String(err?.message || err).slice(-300) }) }
+    },
+  })
+
+  host.register({
+    kind: 'exact',
+    path: '/__agent-alliance/task-output',
+    handler: async (req, res) => {
+      if (req.method !== 'GET') { sendJson(res, 405, { error: 'method not allowed' }); return }
+      const jobs = jobsSvc()
+      if (!jobs) { sendJson(res, 501, { error: 'jobs service unavailable' }); return }
+      const url = new URL(req.url ?? '/', 'http://local')
+      const id = String(url.searchParams.get('id') || '')
+      try {
+        const rd = jobs.read(id)
+        sendJson(res, 200, { id, status: rd.snapshot?.status ?? null, text: String(rd.text || '') })
+      } catch (err) { sendJson(res, 404, { error: String(err?.message || err).slice(-200) }) }
+    },
+  })
+
+  host.register({
+    kind: 'exact',
+    path: '/__agent-alliance/task-kill',
+    handler: async (req, res) => {
+      if (req.method !== 'POST') { sendJson(res, 405, { error: 'method not allowed' }); return }
+      const jobs = jobsSvc()
+      if (!jobs) { sendJson(res, 501, { error: 'jobs service unavailable' }); return }
+      try {
+        const args = await readBody(req)
+        const outcome = jobs.kill(String(args.id || ''), undefined, String(args.reason || 'panel'))
+        sendJson(res, 200, { outcome })
+      } catch (err) { sendJson(res, 404, { error: String(err?.message || err).slice(-200) }) }
+    },
+  })
+
   host.register({
     kind: 'exact',
     path: '/__agent-alliance/session-content',
