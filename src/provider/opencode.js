@@ -23,7 +23,7 @@ export function opencodeDefaultPaths() {
   }
 }
 
-export function makeOpencodeProvider({ deps = {} } = {}) {
+export function makeOpencodeProvider({ deps = {}, config = {} } = {}) {
   const spawnCli = deps.spawnCli || defaultSpawnCli
   const paths = { ...opencodeDefaultPaths(), ...(deps.paths || {}) }
   const openDb = deps.openDb || null // 测试注入；生产走 node:sqlite 惰性加载
@@ -42,9 +42,10 @@ export function makeOpencodeProvider({ deps = {} } = {}) {
   }
 
   async function dispatch({ prompt, cwd, resumeSessionId, model, timeoutMs = 300000, signal }) {
+    const effModel = model || config.defaultModel || null // 显式 > 配置默认 > 无
     let argv = [paths.opencodeBin, 'run', String(prompt)]
     if (resumeSessionId) argv.push('-s', String(resumeSessionId))
-    if (model) argv.push('-m', String(model))
+    if (effModel) argv.push('-m', String(effModel))
     argv.push('--format', 'json')
     const env = { TMPDIR: prefix() + '/tmp' }
     const r = await spawnCli({ argv, cwd, env, timeoutMs, signal })

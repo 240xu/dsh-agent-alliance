@@ -105,3 +105,22 @@ test('exportSession：工具部件映射为 tools 数组（含 error 状态）',
   assert.equal(s.turns[0].tools[1].isError, true)
   assert.equal(s.turns[0].tools[1].resultText, 'NotFound')
 })
+
+
+
+test('配置级默认模型：未显式传 model 时使用 defaultModel', async () => {
+  const fr = fakeRunner(fx)
+  const p = makeOpencodeProvider({ deps: { paths: { opencodeBin: BIN }, spawnCli: fr.spawnCli }, config: { defaultModel: 'zen/x-preview-f-free' } })
+  await p.dispatch({ prompt: 'hi', timeoutMs: 5000 })
+  const argv = fr.calls[0].argv
+  assert.ok(argv.includes('-m'), 'argv 应含 -m')
+  assert.equal(argv[argv.indexOf('-m') + 1], 'zen/x-preview-f-free')
+})
+
+test('显式 model 覆盖配置默认', async () => {
+  const fr = fakeRunner(fx)
+  const p = makeOpencodeProvider({ deps: { paths: { opencodeBin: BIN }, spawnCli: fr.spawnCli }, config: { defaultModel: 'zen/x-preview-f-free' } })
+  await p.dispatch({ prompt: 'hi', model: 'go/manual', timeoutMs: 5000 })
+  const argv = fr.calls[0].argv
+  assert.equal(argv[argv.indexOf('-m') + 1], 'go/manual')
+})

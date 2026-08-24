@@ -9,7 +9,14 @@ import { importOne } from './importer/persist.js'
 import { runRoundtable, formatRoundtableText } from './roundtable.js'
 
 export function registerHttp(host, { registry, config, home, ctx, getAgents, startJob }) {
-  const roundtables = new Map() // id -> {output?|running}
+  const batches = new Map() // batchId -> { kind:'broadcast'|'roundtable', label, startedAt, done, output }
+  let batchSeq = 0
+  function newBatch(kind, label) {
+    const id = 'batch-' + (++batchSeq)
+    const b = { id, kind, label, startedAt: Date.now(), done: false, output: '' }
+    batches.set(id, b)
+    return b
+  }
   // getAgents（可选，测试注入）：返回宿主 agents 服务；缺省走 ctx 之外无法拿到——
   // 生产路径由 index.js 闭包提供 ctx.get('agents')。
   const recent = []
@@ -90,13 +97,17 @@ export function registerHttp(host, { registry, config, home, ctx, getAgents, sta
     path: '/__agent-alliance/tasks',
     handler: async (req, res) => {
       if (req.method !== 'GET') { sendJson(res, 405, { error: 'method not allowed' }); return }
-      const jobs = jobsSvc()
-      if (!jobs) { sendJson(res, 501, { error: 'jobs service unavailable' }); return }
-      try {
-        const snap = jobs.list().filter(s => s.kind === 'agent-alliance').slice(-100)
-          .map(s => ({ id: s.id, label: s.label, status: s.status }))
-        sendJson(res, 200, { tasks: snap })
-      } catch (err) { sendJson(res, 500, { error: String(err?.message || err).slice(-300) }) }
+      const jobs = jobsSvc() // 可为 null：批次不依赖宿主 jobs
+      const items = []
+      for (const b of batches.values()) {
+        items.push({ id: b.id, label: '[' + b.kind + '] ' + b.label, status: b.done ? 'completed' : 'running', batch: true })
+      }
+      if (jobs) {
+        for (const s of jobs.list().filter(s => s.kind === 'agent-alliance').slice(-100)) {
+          items.push({ id: s.id, label: s.label, status: s.status, batch: false })
+        }
+      }
+      sendJson(res, 200, { tasks: items.slice(-120) })
     },
   })
 
@@ -105,14 +116,17 @@ export function registerHttp(host, { registry, config, home, ctx, getAgents, sta
     path: '/__agent-alliance/task-output',
     handler: async (req, res) => {
       if (req.method !== 'GET') { sendJson(res, 405, { error: 'method not allowed' }); return }
-      const jobs = jobsSvc()
-      if (!jobs) { sendJson(res, 501, { error: 'jobs service unavailable' }); return }
       const url = new URL(req.url ?? '/', 'http://local')
       const id = String(url.searchParams.get('id') || '')
+      // 批次优先（不依赖宿主 jobs）
+      const bb = batches.get(id)
+      if (bb) { sendJson(res, 200, { id, status: bb.done ? 'completed' : 'running', text: bb.done ? bb.output : '' }); return }
+      const jobs = jobsSvc()
+      if (!jobs) { sendJson(res, 501, { error: 'jobs service unavailable' }); return }
       try {
         const rd = jobs.read(id)
         sendJson(res, 200, { id, status: rd.snapshot?.status ?? null, text: String(rd.text || '') })
-      } catch (err) { sendJson(res, 404, { error: String(err?.message || err).slice(-200) }) }
+      } catch (err) { sendJson(res, 403, { error: String(err?.message || err).slice(-160) }) }
     },
   })
 
@@ -121,13 +135,15 @@ export function registerHttp(host, { registry, config, home, ctx, getAgents, sta
     path: '/__agent-alliance/task-kill',
     handler: async (req, res) => {
       if (req.method !== 'POST') { sendJson(res, 405, { error: 'method not allowed' }); return }
+      const args = await readBody(req)
+      const bk = batches.get(String(args.id || ''))
+      if (bk) { sendJson(res, 200, { outcome: bk.done ? 'already-finished' : 'unsupported-for-batch' }); return }
       const jobs = jobsSvc()
       if (!jobs) { sendJson(res, 501, { error: 'jobs service unavailable' }); return }
       try {
-        const args = await readBody(req)
         const outcome = jobs.kill(String(args.id || ''), undefined, String(args.reason || 'panel'))
         sendJson(res, 200, { outcome })
-      } catch (err) { sendJson(res, 404, { error: String(err?.message || err).slice(-200) }) }
+      } catch (err) { sendJson(res, 403, { error: String(err?.message || err).slice(-160) }) }
     },
   })
 
@@ -180,46 +196,33 @@ export function registerHttp(host, { registry, config, home, ctx, getAgents, sta
       if (req.method === 'POST') {
         let args = {}
         try { args = JSON.parse((await readBody(req)) || '{}') } catch { sendJson(res, 400, { error: 'bad json body' }); return }
-        if (!startJob) { sendJson(res, 501, { error: 'roundtable 需要 jobs 服务（宿主未提供）' }); return }
-        try {
-          const prompt = String(args.prompt || '')
-          const providerIds = Array.isArray(args.providers) ? args.providers.map(String) : undefined
-          const ac = new AbortController()
-          let doneResolve
-          const done = new Promise((r) => { doneResolve = r })
-          const handle = startJob({
-            kind: 'agent-alliance',
-            label: 'roundtable: ' + prompt.replace(/\s+/g, ' ').trim().slice(0, 60),
-            run() {
-              runRoundtable({ registry, prompt, providerIds, cwd: args.cwd || config?.defaults?.defaultCwd || undefined, timeoutMs: (config?.defaults?.timeoutMs || 300000) * 2, signal: ac.signal })
-                .then((r) => { doneResolve({ status: 'completed', output: formatRoundtableText(r) }) },
-                      (err) => { doneResolve({ status: 'failed', detail: String(err?.message || err).slice(-400) }) })
-              return { cancel(reason) { ac.abort(new Error(reason || 'cancelled')) }, done }
-            },
-          })
-          const entry = { running: true, output: null, detail: null }
-          roundtables.set(handle.id, entry)
-          done.then((outcome) => {
-            entry.running = false
-            entry.output = outcome.output ?? null
-            entry.detail = outcome.detail ?? null
-          })
-          sendJson(res, 200, { jobId: handle.id })
-        } catch (err) {
-          sendJson(res, 500, { error: String(err?.message || err).slice(-300) })
-        }
+        // 面板路径：进程内批次执行（不依赖宿主 job controller——HTTP 组合无 agent 身份）
+        const prompt = String(args.prompt || '')
+        const providerIds = Array.isArray(args.providers) ? args.providers.map(String) : undefined
+        if (!prompt.trim()) { sendJson(res, 400, { error: 'prompt required' }); return }
+        const ac = new AbortController()
+        const b = newBatch('roundtable', 'roundtable: ' + prompt.replace(/\s+/g, ' ').trim().slice(0, 60))
+        sendJson(res, 200, { batchId: b.id })
+        runRoundtable({
+          registry, prompt, providerIds,
+          cwd: args.cwd || config?.defaults?.defaultCwd || undefined,
+          rounds: Number(args.rounds) || 1,
+          timeoutMs: (config?.defaults?.timeoutMs || 300000) * 2,
+          signal: ac.signal,
+        }).then((r) => { b.done = true; b.output = formatRoundtableText(r) },
+              (err) => { b.done = true; b.output = '失败：' + String(err?.message || err).slice(-400) })
         return
       }
-      // GET 轮询
-      if (req.method !== 'GET') { sendJson(res, 405, { error: 'method not allowed' }); return }
+      // GET ?id=batch-x 查询批次结果（兼容旧 jobId 参数名）
       const url = new URL(req.url ?? '/', 'http://local')
-      const id = String(url.searchParams.get('id') || '')
-      const entry = roundtables.get(id)
-      if (!entry) { sendJson(res, 404, { error: 'unknown roundtable job' }); return }
-      if (entry.running) sendJson(res, 200, { running: true })
-      else sendJson(res, 200, { running: false, output: entry.output, detail: entry.detail ?? null })
+      const id = String(url.searchParams.get('id') || url.searchParams.get('batchId') || '')
+      const b = batches.get(id)
+      if (!b) { sendJson(res, 404, { error: 'unknown roundtable batch' }); return }
+      sendJson(res, 200, b.done
+        ? { running: false, output: b.output }
+        : { running: true, output: null })
     },
-  })
+  });
 
   host.register({
     kind: 'exact',

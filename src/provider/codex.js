@@ -23,7 +23,7 @@ export function codexDefaultPaths() {
   }
 }
 
-export function makeCodexProvider({ deps = {} } = {}) {
+export function makeCodexProvider({ deps = {}, config = {} } = {}) {
   const spawnCli = deps.spawnCli || defaultSpawnCli
   const paths = { ...codexDefaultPaths(), ...(deps.paths || {}) }
 

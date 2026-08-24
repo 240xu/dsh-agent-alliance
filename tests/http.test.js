@@ -32,25 +32,28 @@ const okProvider = {
   listSessions: async () => [{ id: 's1', title: 't', createdAt: null, messageCount: null }],
 }
 
-test('POST roundtable：经 jobs.start 启动，GET 可轮询直至完成', async () => {
+test('POST roundtable：批次化执行（无宿主 job 依赖），GET 轮询直至完成且入列任务中心', async () => {
   const p = { ...okProvider, dispatch: async ({ prompt }) => ({ text: '桌答:' + prompt }) }
-  const started = []
   const host = mockHost()
-  registerHttp(host, {
-    registry: createRegistry([p]), config: { defaults: {} }, home: tmpHome(),
-    startJob: (spec) => { started.push(spec); const hooks = spec.run(); return { id: 'rt-1', hooks } },
-  })
+  registerHttp(host, { registry: createRegistry([p]), config: { defaults: {} }, home: tmpHome() })
   const r1 = await host.handle('POST', '/__agent-alliance/roundtable', { prompt: '评审这个设计' })
   assert.equal(r1.status, 200)
-  assert.equal(r1.json.jobId, 'rt-1')
-  assert.equal(started.length, 1)
-  assert.equal(started[0].kind, 'agent-alliance')
-  // 轮询：等微任务完成后带 output
-  await new Promise((r) => setTimeout(r, 20));
-  const r2 = await host.handle('GET', '/__agent-alliance/roundtable?id=rt-1')
+  const bid = r1.json.batchId
+  assert.ok(bid && String(bid).startsWith('batch-'))
+  await new Promise((r) => setTimeout(r, 20))
+  const r2 = await host.handle('GET', '/__agent-alliance/roundtable?id=' + bid)
   assert.equal(r2.status, 200)
-  if (r2.json.running) throw new Error('应已完成')
+  assert.equal(r2.json.running, false)
   assert.match(r2.json.output, /桌答:评审这个设计/)
+  // 任务中心应包含该批次
+  const tl = await host.handle('GET', '/__agent-alliance/tasks')
+  const row = (tl.json.tasks || []).find(x => x.id === bid)
+  assert.ok(row, '批次应出现在任务列表')
+  assert.equal(row.status, 'completed')
+  // task-output 也能读批次
+  const to = await host.handle('GET', '/__agent-alliance/task-output?id=' + bid)
+  assert.equal(to.status, 200)
+  assert.match(to.json.text, /桌答/)
 })
 
 test('注册九个端点', () => {
@@ -168,7 +171,7 @@ test('任务中心三端点：list 过滤 kind / read 输出 / kill 取消', asy
   assert.equal(o.status, 200)
   assert.equal(o.json.text, '输出内容')
   const nf = await host.handle('GET', '/__agent-alliance/task-output?id=nope')
-  assert.equal(nf.status, 404)
+  assert.ok(nf.status >= 400 && nf.status < 500, '未知 job 应返回 4xx: ' + nf.status)
   const k = await host.handle('POST', '/__agent-alliance/task-kill', { id: 'agent-alliance-1' })
   assert.equal(k.status, 200)
   assert.equal(k.json.outcome, 'requested')

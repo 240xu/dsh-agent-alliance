@@ -375,8 +375,9 @@ window.__ModuleLoader__.load({
         api('/roundtable', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: st.prompt, providers: selLoad().length ? selLoad() : undefined }) })
           .then(function (r) {
             if (r.status !== 200) { upd({ busy: false, err: (r.json && r.json.error) || r.status }); return; }
-            upd({ busy: false, jobId: r.json.jobId, running: true });
-            poll(r.json.jobId);
+            var rid = r.json.batchId || r.json.jobId;
+            upd({ busy: false, jobId: rid, running: true });
+            poll(rid);
           }, function () { upd({ busy: false, err: '请求失败' }); });
       };
       return h('div', null,

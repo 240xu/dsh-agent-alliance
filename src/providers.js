@@ -14,9 +14,10 @@ export function buildProviders({ config, deps = {} } = {}) {
   const paths = deps.paths || {}
   const openDb = deps.openDb || {}
 
-  const claude = makeClaudeProvider({ deps: { ...(spawnCli ? { spawnCli } : {}), paths: paths.claude } })
-  const codex = makeCodexProvider({ deps: { ...(spawnCli ? { spawnCli } : {}), paths: paths.codex } })
+  const claude = makeClaudeProvider({ config: pc.claude || {}, deps: { ...(spawnCli ? { spawnCli } : {}), paths: paths.claude } })
+  const codex = makeCodexProvider({ config: pc.codex || {}, deps: { ...(spawnCli ? { spawnCli } : {}), paths: paths.codex } })
   const opencode = makeOpencodeProvider({
+    config: pc.opencode || {},
     deps: { ...(spawnCli ? { spawnCli } : {}), paths: paths.opencode, ...(openDb.opencode ? { openDb: openDb.opencode } : {}) },
   })
   const zcode = makeZcodeProvider({

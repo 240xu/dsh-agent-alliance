@@ -24,7 +24,7 @@ export function claudeDefaultPaths() {
   }
 }
 
-export function makeClaudeProvider({ deps = {} } = {}) {
+export function makeClaudeProvider({ deps = {}, config = {} } = {}) {
   const spawnCli = deps.spawnCli || defaultSpawnCli
   const paths = { ...claudeDefaultPaths(), ...(deps.paths || {}) }
 
@@ -41,7 +41,8 @@ export function makeClaudeProvider({ deps = {} } = {}) {
   async function dispatch({ prompt, cwd, resumeSessionId, model, timeoutMs = 300000, signal }) {
     const argv = [paths.grun, paths.claudeBin, '-p', String(prompt), '--output-format', 'stream-json', '--verbose']
     if (resumeSessionId) argv.push('--resume', String(resumeSessionId))
-    if (model) argv.push('--model', String(model))
+    const effModel = model || config.defaultModel || null
+    if (effModel) argv.push('--model', String(effModel))
     // Termux 无 /tmp，grun 二进制会写 /tmp/claude-*：强制 TMPDIR 归一
     const r = await spawnCli({ argv, cwd, timeoutMs, signal, env: { TMPDIR: prefix() + '/tmp' } })
     if (r.code !== 0 && !r.stdout.trim()) {
