@@ -360,6 +360,11 @@ window.__ModuleLoader__.load({
         st.bcErr ? h('div', { className: 'aaa-bad', style: { marginTop: '8px' } }, st.bcErr) : null,
         h('div', { style: { marginTop: '8px' } },
           h('button', { className: 'aaa-btn', disabled: st.busy, onClick: run }, st.busy ? T('disp.running') : T('disp.run'))),
+        st.mode === 'bc' && st.broadcast && !st.broadcast.some(function (x) { return x.status === 'running'; }) ? h('button', { className: 'aaa-btn', style: { marginLeft: '8px' }, onClick: function () {
+          var rows = st.broadcast.map(function (x) { return '| ' + x.p + ' | ' + Math.round((x.ms || 0) / 100) / 10 + 's | ' + String(x.text || '').replace(/\|/g, '\\|').replace(/\n/g, ' ') + ' |'; });
+          var md = '# Broadcast Compare\n\n| Agent | Time | Reply |\n| --- | --- | --- |\n' + rows.join('\n');
+          try { navigator.clipboard.writeText(md); upd({ bcErr: '✅ Markdown 已复制' }); } catch (e2) {}
+        } }, T('bc.export')) : null,
         st.mode === 'single' && st.result ? h('pre', { className: 'aaa-pre', style: { marginTop: '10px' } }, st.result) : null,
         st.mode === 'bc' && st.broadcast ? h('div', { className: 'aaa-cmp' },
           st.broadcast.map(function (x) {
