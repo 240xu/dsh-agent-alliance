@@ -8,6 +8,8 @@ window.__ModuleLoader__.load({
     var reactDomClient = require('react-dom/client');
     var h = react.createElement;
 
+    var lastViewed = null;
+
     // ---------- i18n（跟随客户端语言；字典在 apply 里经 locale 服务注册） ----------
     var DICTS = {
       zh: {
@@ -229,6 +231,7 @@ window.__ModuleLoader__.load({
         load('');
       }, []);
       var openContent = function (provider, id) {
+        lastViewed = { provider: provider, extId: id };
         set(function (cur) { return Object.assign({}, cur, { content: { loading: true } }); });
         getContent(provider, id).then(function (r) {
           set(function (cur) { return Object.assign({}, cur, { content: { data: r.status === 200 ? r.json : null, error: r.status !== 200 ? r.json.error : null } }); });
@@ -289,7 +292,7 @@ window.__ModuleLoader__.load({
     }
 
     function DispatchTab() {
-      var s = react.useState({ mode: 'single', provider: 'opencode', prompt: '', result: null, busy: false, broadcast: null });
+      var s = react.useState({ mode: 'single', provider: 'opencode', prompt: '', result: null, busy: false, broadcast: null, resume: false });
       var st = s[0], set = s[1];
       var upd = function (patch) { set(function (cur) { return Object.assign({}, cur, patch); }); };
       var avail = react.useState([]);
@@ -318,7 +321,7 @@ window.__ModuleLoader__.load({
           return;
         }
         upd({ busy: true, result: null });
-        postDispatch({ provider: st.provider, prompt: st.prompt }).then(function (r) {
+        postDispatch({ provider: st.provider, prompt: st.prompt, resumeSessionId: st.resume && lastViewed ? lastViewed.extId : undefined }).then(function (r) {
           upd({ busy: false, result: r.status === 200
             ? ('[' + r.json.provider + (r.json.externalSessionId ? ' 会话 ' + r.json.externalSessionId : '') + ']\n' + r.json.text)
             : ('失败：' + ((r.json && r.json.error) || r.status)) });
@@ -337,6 +340,9 @@ window.__ModuleLoader__.load({
             })),
           st.mode === 'single' ? h('select', { className: 'aaa-select', style: { width: '160px' }, value: st.provider, onChange: function (e) { upd({ provider: e.target.value }); } },
             (providers.length ? providers : [st.provider]).map(function (p) { return h('option', { key: p, value: p }, p); })) : null,
+          h('label', { style: { display: 'flex', alignItems: 'center', gap: '5px' } },
+            h('input', { type: 'checkbox', checked: !!st.resume, onChange: function (e) { upd({ resume: e.target.checked }); } }),
+            h('span', { className: 'aaa-dim' }, '续聊上次查看的会话')),
           h('span', { className: 'aaa-dim' }, '⚠ 真实消耗该 agent 的 API 额度')),
         h('textarea', { className: 'aaa-textarea', placeholder: T('disp.ph'), value: st.prompt, onChange: function (e) { upd({ prompt: e.target.value }); } }),
         st.bcErr ? h('div', { className: 'aaa-bad', style: { marginTop: '8px' } }, st.bcErr) : null,
