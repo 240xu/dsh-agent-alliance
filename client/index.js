@@ -216,7 +216,7 @@ window.__ModuleLoader__.load({
     }
 
     function SessionsTab() {
-      var s = react.useState({ providers: [], sessions: [], filter: '', content: null, busy: false, msg: '' });
+      var s = react.useState({ providers: [], sessions: [], filter: '', content: null, busy: false, msg: '' , picked: [] });
       var st = s[0], set = s[1];
       var load = function (filter) {
         set(function (cur) { return Object.assign({}, cur, { busy: true }); });
@@ -263,10 +263,22 @@ window.__ModuleLoader__.load({
             h('span', { style: { flex: '1', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: x.id },
               (x.title || T('sess.none')) + (x.cwd ? '　@' + x.cwd : '')),
             x.imported ? h('span', { className: 'aaa-dim' }, '已导入') : null,
+            h('label', { style: { display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer' }, onClick: function (e) { e.stopPropagation(); togglePick(x.id); } },
+              h('input', { type: 'checkbox', checked: st.picked.indexOf(x.id) >= 0, onChange: function () {} }),
+              h('span', { className: 'aaa-dim', style: { fontSize: '11px' } }, '选')),
             h('button', { className: 'aaa-btn', onClick: function () { openContent(x.provider, x.id); } }, T('sess.view')),
             h('button', { className: 'aaa-btn', disabled: !!x.imported, onClick: function () { doImport(x.provider, x.id); } }, x.imported ? T('sess.imported') : T('sess.import')));
         }),
         !st.sessions.length ? h('div', { className: 'aaa-dim' }, T('sess.none')) : null,
+        st.picked.length ? h('div', { style: { margin: '8px 0' } },
+          h('button', { className: 'aaa-btn', onClick: function () {
+            var ids = st.picked.slice(); var doneN = 0; var lastId = '';
+            (function nx(i) { if (i >= ids.length) { upd({ msg: '✅ 批量导入完成 ' + doneN + '/' + ids.length + (lastId ? ' · 末次 dshSessionId: ' + lastId : '') , picked: [] }); load(''); return; }
+              var it = st.sessions.find(function (x) { return x.id === ids[i]; });
+              if (!it) { nx(i + 1); return; }
+              postImport(it.provider, it.id).then(function (r) { if ((r.json || {}).dshSessionId) lastId = r.json.dshSessionId; if ((r.json || {}).status === 'imported') doneN++; nx(i + 1); }, function () { nx(i + 1); });
+            })(0);
+          } }, '导入选中(' + ids.length + ')')) : null,
         st.content ? h('div', { className: 'aaa-modal', onClick: function (e) { if (e.target === e.currentTarget) set(function (c) { return Object.assign({}, c, { content: null }); }); } },
           h('div', { className: 'aaa-modal-card' },
             h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' } },
