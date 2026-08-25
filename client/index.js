@@ -262,7 +262,7 @@ window.__ModuleLoader__.load({
             h('span', { className: 'aaa-tag' }, x.provider),
             h('span', { style: { flex: '1', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: x.id },
               (x.title || T('sess.none')) + (x.cwd ? '　@' + x.cwd : '')),
-            x.imported ? h('span', { className: 'aaa-dim' }, '已导入') : null,
+            x.imported ? h('span', { className: 'aaa-dim' }, T('sess.imported')) : null,
             h('label', { style: { display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer' }, onClick: function (e) { e.stopPropagation(); togglePick(x.id); } },
               h('input', { type: 'checkbox', checked: st.picked.indexOf(x.id) >= 0, onChange: function () {} }),
               h('span', { className: 'aaa-dim', style: { fontSize: '11px' } }, '选')),
@@ -278,7 +278,7 @@ window.__ModuleLoader__.load({
               if (!it) { nx(i + 1); return; }
               postImport(it.provider, it.id).then(function (r) { if ((r.json || {}).dshSessionId) lastId = r.json.dshSessionId; if ((r.json || {}).status === 'imported') doneN++; nx(i + 1); }, function () { nx(i + 1); });
             })(0);
-          } }, '导入选中(' + ids.length + ')')) : null,
+          } }, T('batch.go') + '(' + ids.length + ')')) : null,
         st.content ? h('div', { className: 'aaa-modal', onClick: function (e) { if (e.target === e.currentTarget) set(function (c) { return Object.assign({}, c, { content: null }); }); } },
           h('div', { className: 'aaa-modal-card' },
             h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' } },
