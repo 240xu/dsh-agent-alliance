@@ -41,10 +41,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/gh218/dsh-agent-alliance.git"
+    "url": "git+https://github.com/240xu/dsh-agent-alliance.git"
   },
   "bugs": {
-    "url": "https://github.com/gh218/dsh-agent-alliance/issues"
+    "url": "https://github.com/240xu/dsh-agent-alliance/issues"
   },
-  "homepage": "https://github.com/gh218/dsh-agent-alliance#readme"
+  "homepage": "https://github.com/240xu/dsh-agent-alliance#readme"
 }
