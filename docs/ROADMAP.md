@@ -1,52 +1,43 @@
-# ROADMAP — dsh-agent-alliance 后续计划（PM 视角）
+# ROADMAP — dsh-agent-alliance
 
-> 2026-08-22 基于 92 测试全绿、四期交付与深度兼容轮的全面审计制定。
-> 优先级：P0 = 立即做 / P1 = 下个迭代 / P2 = 观察后决定。
+> 2026-11-06 重写为对齐 DSH 0.2.1-rc.2 的版本。上一版（0.1.0，2026-08-22）的目标与现状已归档在
+> `docs/VERIFICATION-P1.md` 的历史小节里，不再作为当前计划依据。
 
-## 现状快照
+## 现状（0.2.0）
 
-- 双面插件：6 CLI 工具 + 原生子代理工具 subagent_opencode + 7 HTTP 端点 + 主题/i18n 面板
-- 质量：92/90+ 测试全绿；manifest-guard 防线；零运行时 npm 依赖
-- 已验证：导入全链路（45~59 轮真实会话）、端点、ACP 握手、工作区归组、主题令牌
+- 双面插件，**运行时零 npm 依赖**（不 import 任何 `@deepseek-ai/*`）
+- 6 个模型工具 + 一条 `/__agent-alliance` 前缀路由（9 个端点）+ slot 化 Web 面板
+- 派发两层：官方子代理（`subagent-codex` / `subagent-claude-code`）优先，CLI 包装层回落
+- 导入写会话格式 v4，走 `create → append → flush → close` handle 契约
+- 测试：`node --test 'tests/*.test.js'`，全部 fixture + 假 ctx 驱动，零额度、零外部 CLI
 
 ## P0（立即）
 
-1. **重启回归**：本轮 host 侧改动（信号量并发上限、opencode 工具部件映射、
-   claude sidechain 过滤）需一次重启后跑全量回归——清单见 VERIFICATION-P1.md
-2. **用户环境修复指引**：claude 依赖本地代理 9316；opencode 默认模型已由
-   原生工具挂载钉为免费实验模型，CLI 包装层仍可用 `model` 参数覆盖
+1. **真实宿主回归**：重启后确认 6 工具可见、侧边栏入口出现、五标签面板可读数据。
+   清单见 `docs/VERIFICATION-P1.md` 的「0.2.0 回归」小节。
+2. **官方后端实测**：装上两个官方包后，用 `agent_dispatch` 发一条最小任务（需用户同意额度），
+   确认结果里 `backend: "subagent"`，并在 `list_agents` 里看到子代理会话。
+3. **告警可见性**：`ctx.logger` 的 warn/error 是否在面板「状态」标签暴露；目前只能看宿主日志。
 
 ## P1（下个迭代）
 
-1. **codex 原生嵌入**：无内建 ACP。两条路线：
-   a. 调研社区适配器（codex-acp 类项目）成熟度后挂载；
-   b. 自写 stdio→ACP 桥（复用 runner，工作量 ~2 天）
-2. **面板「外部会话」标签接原生子代理**：从面板直接发起 subagent_opencode 派发
-3. **导入体验**：agent_import_scan 结果分页 + 按工作目录聚合视图；
-   导入完成后在返回值里给出「打开该会话」的 GUI 跳转提示
-4. **设置卡片**：把 providers.enabled/maxConcurrent 从 JSON 配置升级为 GUI 设置面
-   （web-ui.plugin.item slot，参照 task-board SettingsCard）
+1. **设置卡片**：把 `providers.*.enabled` / `maxConcurrent` / `defaultCwd` 从配置升级为 Settings 面板表单
+   （`settings.section` slot + `host.call` 写回 `cordis.patch.yml`），参照 `dsh-nightly-automation` 的做法。
+2. **导入体验**：`agent_import_scan` 结果分页 + 按工作目录聚合；导入完成后返回可点击的会话跳转。
+3. **任务中心细化**：把 `jobs.readAt` 的 `next`/`lossy` 暴露成「已丢失前段」提示，避免长输出被环形缓冲截断后误读。
+4. **圆桌结构化输出**：辩论轮次结果落成 JSON 便于外部消费，而不只是给模型看的文本。
 
 ## P2（观察后决定）
 
-1. **发布 npm**：当前 file: 本地安装。若要分享：先 git history 重写（含旧 UUID 的历史提交）+
-   CI 加 security-scan 步骤 + 版本号策略（0.2.0）
-2. **zcode 协同实测**：等 zcode 安装后按 commandTemplate 实测调优
-3. **claude ACP 稳定性**：依赖本地代理在线；可考虑直连模式开关
-4. **导出/回写**：DSH 会话 → 各 agent 格式的反向导出（对标 chat-import 的 export 能力）
-5. **多 workspace 派发记录持久化**：recent dispatches 目前进程内，重启即失——按需落盘
+1. **OpenCode 官方化**：若上游出现官方 ACP/子代理包，把 `providers.opencode.subagentProvider` 默认指向它，
+   并把 CLI 包装层降为显式 opt-in。
+2. **反向导出**：DSH 会话 → 各 agent 格式（对标 `dsh-chat-import` 的 export 能力）。
+3. **多 workspace 派发记录持久化**：`recentDispatches` 目前只在进程内，重启即失。
+4. **发布 npm**：当前是 `link:` 本地安装；若要发布，先补 CI（test + `node --check`）与版本策略。
 
-## 技术债登记
+## 技术债
 
-- ~~maxConcurrent 未生效~~ ✅ 已实现（信号量）
-- ~~opencode 工具部件丢失~~ ✅ 已映射
-- ~~claude sidechain 噪声~~ ✅ 已过滤
-- 面板动态文案（错误消息等）仍为中英混合硬编码 → 随 i18n 二期补全
-- pnpm 对 file: 目录依赖不重拷 → 每次发布需手动 tar 同步（脚本化候选）
-
-## 进度更新（2026-08-24）
-
-- ✅ P1 全部完成：多选选择器/广播对比/圆桌轮数/任务中心
-- ✅ 自研 CLI→ACP 桥（codex 原生嵌入落地）
-- ✅ P2 大部：续聊开关/批量导入/dshSessionId 展示/i18n 二期首批/导出 MD
-- ⏳ 剩余：设置卡片 GUI、i18n 尾巴、zcode 实测（待环境）
+- `src/provider/*` 仍按 Termux 优先的路径探测（`$PREFIX`），在普通 Linux 上依赖用户配置覆盖。
+  可改成「按命令名探测 + 显式路径覆盖」的对称形式。
+- 面板没有单元测试，只有 `manifest-guard` 的结构守卫；渲染逻辑靠人工点验。
+- `docs/VERIFICATION-P1.md` 保留了大量 0.1.0 时代的验证记录，只作历史参考，其中的契约描述已过期。

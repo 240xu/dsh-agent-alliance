@@ -1,108 +1,111 @@
-# P1 验证记录
+# dsh-agent-alliance 0.2.0 验证记录
 
-## 离线（已完成）
+> 2026-11-06。环境：DSH（`@deepseek-ai/dsh`）`0.2.1-rc.2`，Node v22.20.0，Linux x86_64。
+> 本文件只记录**本版本**的验证；0.1.0 时代的记录见下方「历史」小节，其中的契约描述已过期。
 
-- node --test 全量：47/47 通过（config/runner/parse/provider×4/factory/tools/apply）
-- 真实探测（仅 --version，零额度）：claude OK 2.1.232 / codex OK 0.148.0 / opencode OK 1.18.18 / zcode 按设计关闭
-- profile 安装：file: 依赖 + bundle 追加完成；从 profile 目录 import('dsh-agent-alliance') 成功
+## 离线测试（无外部依赖、零额度）
 
-## 在线（重启宿主后执行）
+```
+node --test 'tests/*.test.js'
+# tests 186 | # pass 186 | # fail 0
+```
 
-- [ ] 新会话工具列表出现 agent_dispatch / agent_sessions / agent_session_read
-- [ ] agent_sessions ×3 家各返回历史会话列表（只读，零额度）
-- [ ] agent_session_read 抽取一家会话内容（只读，零额度）
-- [ ] agent_dispatch 最小探针：每家一条「回复一个词：ok」级别任务（消耗少量额度，需用户同意）
-      - 校验 parse.js 与真实输出一致；不符则回修 parse+fixture
-- [ ] 后台模式：background:true 返回 jobId，job_output 可读，job_kill 可停
-- [ ] 续聊：dispatch 带 resumeSessionId 二轮对话上下文连贯
-- [ ] 结果记录到本文件
+覆盖：backend 解析（17）、config 优先级与大声报错、http 信任校验与 `{ ok }` 信封、tools 的
+JSON-Schema 参数与 job owner、importer 的 v4 事件流与 handle 调用顺序、provider×4 / parse / runner /
+roundtable 的既有 fixture 套件、manifest 守卫。
 
-## 已知事项
+零外部依赖校验：
 
-- codex 输出解析按容错策略实现（人类可读输出末段），在线探针后如不符再修
-- opencode --format json 事件形状按 NDJSON part 流实现，同上
-- zcode 协同为模板占位（官方无公开无头规范）；导入器在 P3 按 db.sqlite schema 实现
+```
+grep -rn "@deepseek-ai/" index.js client.js src/ locale/     # 无输出
+node -e "…package.json"                                       # dependencies: none, peerDependencies: none
+```
 
-## 事故复盘（2026-08-21 16:35–17:00 web 连崩）
+## 真实宿主校验（关键）
 
-**责任链（我的错误）**：
-1. P1 尚未实现 client 半边，却在 package.json 提前声明了 `dsh.client` + `exports["./client"]`；
-2. 把插件加入共享 profile 的 bundles 前没有做「带插件启动」验证——宿主启动读取
-   client/index.js（不存在）→ ENOENT → 整个 web 进程崩溃，且反复重启反复崩；
-3. 违反了「不静默动共享 3080 实例」的协作约定（虽然未主动 kill，但装包即影响下次重启）。
+全部用**已安装**的 0.2.1-rc.2 代码执行，不是 mock。
 
-**修正（本次提交）**：
-- 移除整个 client 声明面，P1–P3 回归 host-only 形态（根因消除，而非占位糊弄）；
-- 新增 tests/manifest-guard.test.js 崩溃向量守卫：未来 P4 重新声明 client 面时，
-  必须同时存在含 __ModuleLoader__.load 与 apply 的完整入口，否则测试红；
-- 手动同步安装副本（pnpm 对 file: 目录依赖在 up-to-date 时不会重拷——教训）；
-- 移除 opencode 应救会话加的 TEMP disabled 块；dump-config 离线校验通过。
+### 1. 会话事件流通过 v4 准入与关系校验
 
-**采纳的流程约定（来自事故报告）**：
-1. 进 bundles 前必须先本地起一次验证；
-2. 不静默 kill/重启共享 3080 实例，重启前知会；
-3. 崩溃现场看 ~/dsh-web-3080.log 尾部栈 + ~/.dsh/monitor/dsh-web-monitor.log。
+```
+assertV4RowAdmission(event, KNOWN_SESSION_EVENT_TYPES)      # 每一行
+assertReleasedV4Relationships(artifact, knownEventTypes)    # 全流
+→ PASS
+```
 
-## 进度更新（同日稍后）
+这一步专门证伪了 SPEC 初稿的三处错误（详见 `docs/SPEC-v2.md` 的「Three rules here are
+enforced by the installed validators」）：`tool-result` 外壳被拒、`tool/call` 前必须有
+`assistant/message` 广告、`text-chunks` 的 `dt` 长度必须是 `texts.length - 1`。
 
-- **P2 圆桌完成**：runRoundtable 并发扇出+失败隔离+格式化；agent_roundtable 工具（默认后台 job）
-- **P3 导入器完成（代码级）**：
-  - convertToDshEvents：外部会话→DSH 事件流（schema 从真实 session.jsonl.zstd 多帧采样固化；
-    多帧 zstd 用 magic 切帧+node zlib 逐帧解码，与 fzstd 等效，零依赖）
-  - 四家 exportSession（claude 含工具配对；codex/opencode/zcode 文本级）
-  - persist：agents.create 优先 / sessionPersistence 回退；台账 imports.json 幂等
-  - agent_import_scan / agent_import 工具接入（共 6 工具）
-- **实测发现并修复**：工具输出含 undefined 违反宿主无损 JSON 契约 → lossless() 消毒（live-test finding）
-- 测试 74/74；安装副本已同步
+### 2. assistant stream 能被宿主展开
 
-## 待办
+```
+expandAssistantStream(event.data.stream)   # 3 条 assistant/message，全部接受
+→ [{time, chunk:{type:'text-delta',…}}] / tool-call-delta
+```
 
-- [ ] 协调重启：激活 6 工具（运行中实例仍是 4 工具旧版）
-- [ ] 在线验证：import_scan 真实扫描 + import 一条真实会话 + dispatch 探针（需额度同意）
-- [ ] P4 Web 面板（client 入口须过 manifest-guard 守卫测试）
+### 3. 模型可见消息投影正确
 
-## 最终在线验证（2026-08-22 09:27 重启后）
+用 `deriveEventMessage` 逐事件投影，得到预期的 `user` / `assistant` / `tool` 三类消息，
+`tool-call` 块与 `tool/result` 的 `role: 'tool'` + `toolCallId` 均正确。
 
-- ✅ 6 工具注册（宿主日志）；7 端点注册（late webServer 日志）
-- ✅ 导入全链路：agent_import_scan → agent_import（45 轮真实会话）→ 幂等 → **宿主严格校验器通过**
-  - 过程中发现并修复三个落盘契约问题：信封七键白名单、seq 从 0 连续、turn/end 必须带 completed reason、头必须含 version
-- ✅ HTTP 端点实测：/state 返回四家探测数据；client.js 200
-- ✅ dispatch 机制实测（探针）：
-  - claude：flags/流式解析/session_id 捕获/错误传播全正确；API 层 Connection refused —— 用户本地代理 127.0.0.1:9316 未运行（settings.json ANTHROPIC_BASE_URL），属用户环境
-  - opencode：CLI 建会话+JSON 流正常；其默认模型 go/claude-fable-5 在当前配置不存在，属用户环境
-  - 结论：插件机制端到端正确；实际可用性取决于各 agent 自身配置与额度
-- ✅ zcode：模板适配器按规范预留（默认 disabled）
-- ⏳ 面板视觉确认：侧边栏「Agent 协同」入口 + 三标签页，待用户在浏览器点验
+### 4. 真实 JSONL 后端写入 → 校验 → 读回
 
-## 原生嵌入（新目标，2026-08-22）
+```
+new Context(); ctx.plugin(dsh-session-persistence-jsonl, {root})
+handle = await svc.create({version:4,…})
+await handle.append(events); await handle.flush(); await handle.close()
+svc.open(id,'read').read(0)
+→ 23 events 原样读回，类型顺序一致
+```
 
-- ✅ 主题修复：面板样式改骑 --dsw-alias-bg-base / --dsw-alias-label-* / --dsw-alias-border-l* 等真实皮肤令牌（此前用了不存在的 bg-primary 导致回退硬编码深色）→ ca142c8
-- ✅ 原生子代理嵌入路径确认并落地：
-  - DSH 官方 @deepseek-ai/dsh-subagent-acp（进程外 ACP 后端）+ opencode acp 内建 server
-  - profile 已挂载：providerName 'opencode'（env 已修 TMPDIR）
-  - 原生形态工具挂载：subagent_opencode = dsh-tool-subagent 固定 provider:'opencode'，agentOptions.model 钉实验模型 opencode/x-preview-f-free（用户指定免费实验模型）
-  - ACP 裸握手探针实测：initialize → session/new → session/prompt → agent_message_chunk 流式回包全通
-  - 待用户 GUI 点验：新会话应可见 subagent_opencode 工具；侧边栏配色应跟随皮肤
-- 后续可选：claude 走 @zed-industries/claude-code-acp（依赖本地代理 9316 运行）；codex 无内建 ACP，需社区适配器或自写桥
+读回路径会跑 header 校验、逐行准入、关系校验与尾部修复，因此这一条同时证明了导入落盘的完整性。
 
-## 深度兼容轮验证（2026-08-22 15:30 重启后）
+### 5. 插件在真实 Cordis 上挂载
 
-- ✅ ①工作区归组：59 轮真实导入 <导入会话A> 已入 workspace.json 记账（REQ-39 主目录防护同款）
-- ✅ ②UI 卡片：dispatch(terminal/generic)、roundtable(generic)、import(generic) 按 dsh-tool-bash 同款 API 实现
-- ✅ ③面板 i18n：DICTS(zh/en) 经 ctx.locale 注册 + bind 跟随客户端语言；client.js 下发已确认含 DICTS 与 locale.register
-- ✅ ④claude ACP：@zed-industries/claude-code-acp@0.16.2 安装并以 node 直驱挂载（providerName 'claude'），启动零错误；实际运行需本地代理 9316 在线
-- ✅ ⑤job 展示：后台派发为原生 job（kind agent-alliance），job_output/job_kill 通用控制
+```
+ctx.plugin(dsh-system-prompt); ctx.plugin(ToolRuntime); ctx.plugin(plugin, {legacyConfigFile:false})
+→ 6 个工具注册：agent_dispatch / agent_roundtable / agent_sessions /
+                agent_session_read / agent_import_scan / agent_import
+→ 每个工具 parameters 都是合法 JSON Schema（type/properties/required 齐备）
+```
 
-## 发布记录
+### 6. HTTP 面
 
-- 公开仓库: https://github.com/gh218/dsh-agent-alliance （2026-08-22）
-- 发布前处置: git filter-branch 重写全部历史（清除早期夹具中的真实 codex 会话 UUID，6 处→0）、
-  refs/original+reflog+gc 剪枝、补 MIT LICENSE、package.json 指向公开主页
-- 发布后偏执验证: 全新克隆扫描（工作区+全历史）凭据/隐私零命中；48 文件
+```
+webServer.register → 1 条 kind:'prefix' path:'/__agent-alliance'
+GET /state → 200 {"ok":true,"providers":[…]}
+GET /nope  → 404 {"ok":false,"code":"not-found"}
+```
 
-## 保真度回归（2026-08-22 19:58 重启后）
+### 7. 生命周期归属
 
-- ✅ 大会话导入：opencode ses_081fe…（番茄逆向）466 轮 / **9368 对 tool_call↔tool_result** /
-  23197 事件，9.5s 落盘；宿主严格校验零结构问题；幂等 15ms
-- ✅ maxConcurrent 信号量已随重启上线（单元覆盖：上限/排队取消/竞态修复）
-- ✅ 面板 i18n + locale 实时切换随重启上线（client.js 下发已含 DICTS）
+```
+fiber.dispose() → 工具 6→0，路由 1→0
+```
+
+证明确实每个注册都经由 `ctx.effect()` 归属到插件 fiber，卸载即回收。
+
+## 尚未验证（需要真实环境与额度）
+
+- [ ] **官方子代理真实派发**：装上 `@deepseek-ai/dsh-subagent-codex` / `-claude-code` 后，
+      用 `agent_dispatch` 发一条最小任务，确认返回值 `backend: "subagent"`。
+      这是唯一需要真实额度的验证项。
+- [ ] **CLI 包装层真实运行**：本机当前**没有**安装 `claude` / `codex` / `opencode` / `zcode`
+      任何 CLI（`which` 全部为空），因此 `detect()` 会如实报告不可用；机制层的 argv/解析由
+      fixture 测试覆盖，但未在本机跑过真实二进制。
+- [ ] **Web 面板视觉确认**：`client.js` 已通过语法检查、manifest 守卫，并由作者在 jsdom + React 18
+      下无头渲染验证（五标签、错误行重试、zh/en 均正常，无字面颜色、无 `react-dom`/`document.body`）；
+      但未在浏览器里实际点验。
+- [ ] **`ctx.connection` 真实信任校验**：无 connection 服务时按放行处理（有测试），
+      未在带鉴权的实例上做过 401/403 的真实请求。
+
+## 历史（0.1.0，2026-08-22）
+
+以下记录保留作事故与经验参考。其中描述的 jobs `owner: Agent`、`sessionPersistence.append(id,events)`、
+`assistant/chunk` 事件、ACP 桥挂载**均已失效**，请勿据此实现。
+
+- 2026-08-21 web 连崩事故：先声明 `dsh.client` 却没有 client 入口 → 宿主 ENOENT 崩。
+  修正后保留 `tests/manifest-guard.test.js` 作为崩溃向量守卫。
+- 真实导入演练：opencode 会话 466 轮 / 9368 对 tool_call↔tool_result / 23197 事件。
+- 工作区归组：59 轮真实会话导入后计入 `workspace.json`。

@@ -1,4 +1,8 @@
 # dsh-agent-alliance bundle patch: inserts the plugin row into the profile roster.
+# The row `config` is merged over the legacy ~/.dsh/dsh-agent-alliance.json file
+# and over the built-in defaults (row config wins).
 - insert:
     - id: agent-alliance
       name: 'dsh-agent-alliance'
+      config:
+        legacyConfigFile: true

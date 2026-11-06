@@ -1,57 +1,95 @@
-// dsh-agent-alliance: Host 半边入口。
-// apply(ctx)：config → providers → registry → 注册工具。
-// 防御性容错：任何初始化失败只记日志，绝不拖垮宿主启动（session-delete 先例）。
+// dsh-agent-alliance: Host entry point.
+//
+// apply(ctx, config) resolves configuration, builds the CLI provider registry
+// and the backend resolver, then registers the model tools and (when the
+// composition mounts a web server) the panel's HTTP surface.
+//
+// Every registration goes through ctx.effect()/ctx.on() so an unload disposes
+// it, and no failure is swallowed: a misconfiguration logs and rethrows, so the
+// fiber fails visibly instead of leaving a half-registered plugin.
 
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { loadConfig } from './config.js'
 import { buildProviders } from './providers.js'
+import { createBackendResolver } from './backend.js'
 import { registerTools } from './tools.js'
 import { registerHttp } from './http.js'
 
-const name = 'agent-alliance'
-// home 用于导入台账（~/.dsh/agent-alliance/imports.json）
-const inject = ['tools', 'jobs']
+/** Cordis function-plugin name. */
+export const name = 'agent-alliance'
 
-function apply(ctx, overrides = {}) {
-  try {
-    let config
-    if (overrides.config) {
-      config = overrides.config
-    } else if (overrides.configError) {
-      throw overrides.configError
-    } else {
-      config = loadConfig()
-    }
-    const home = process.env.DSH_HOME || join(homedir(), '.dsh')
-    const registry = buildProviders({ config })
-    const opts = { registry, config, home, ctx }
-    registerTools(ctx, opts)
+/**
+ * Services the plugin reads. Only `tools` is mandatory: the panel routes and
+ * background jobs attach later when their services appear.
+ */
+export const inject = ['tools']
 
-    // 面板端点（可选 webServer）：终端 profile 不挂；web 面出现时经 inject 兜底注册
-    const jobsSvc = ctx.get('jobs')
-    if (jobsSvc && typeof jobsSvc.start === 'function') {
-      opts.startJob = (spec) => jobsSvc.start(spec)
-    }
-
-    const ws = ctx.get('webServer')
-    if (ws !== undefined && typeof ws.register === 'function') {
-      registerHttp(ws, opts)
-      console.log('[agent-alliance] panel endpoints registered under /__agent-alliance/')
-    } else if (typeof ctx.inject === 'function') {
-      ctx.inject(['webServer'], (sub) => {
-        try {
-          registerHttp(sub.webServer, opts)
-          console.log('[agent-alliance] panel endpoints registered (late webServer)')
-        } catch (err) {
-          console.error('[agent-alliance] http registration failed:', err?.message || err)
-        }
-      })
-    }
-    console.log('[agent-alliance] tools registered: dispatch / roundtable / sessions / session_read / import_scan / import')
-  } catch (err) {
-    console.error('[agent-alliance] init failed (plugin disabled this boot):', err?.message || err)
-  }
+/**
+ * Filesystem root for plugin state: the import ledger lives under
+ * `<home>/agent-alliance/imports.json`.
+ * @returns {string} absolute DSH home directory
+ */
+function resolveHome() {
+  return process.env.DSH_HOME || join(homedir(), '.dsh')
 }
 
-export { apply, inject, name }
+/**
+ * Report one failure through the plugin logger when the context offers one.
+ * @param {object} ctx plugin context
+ * @param {string} level logger severity
+ * @param {string} message human-readable message
+ * @param {unknown} error failure detail
+ * @returns {void}
+ */
+function logFailure(ctx, level, message, error) {
+  const logger = ctx.logger
+  const write = logger?.[level]
+  if (typeof write !== 'function') return
+  write.call(logger, 'agent-alliance: ' + message + ': ' + String(error?.message || error))
+}
+
+/**
+ * Register the panel routes once a `webServer` service exists.
+ *
+ * The whole registration is one effect: it disposes the route when the plugin
+ * fiber unloads. A missing web server is not an error (terminal presets mount
+ * none), so the `inject` callback simply never runs there.
+ * @param {object} ctx plugin context
+ * @param {object} options shared dependencies for the router
+ * @returns {void}
+ */
+function registerPanel(ctx, options) {
+  ctx.inject(['webServer'], (webCtx) => {
+    webCtx.effect(() => registerHttp(webCtx.webServer, options), 'agent-alliance: panel routes')
+  })
+}
+
+/**
+ * Plugin entry point.
+ * @param {object} ctx plugin context; `ctx.tools` is required
+ * @param {object} [rowConfig] resolved row config from cordis.patch.yml
+ * @returns {void}
+ */
+export function apply(ctx, rowConfig = {}) {
+  let config
+  try {
+    config = loadConfig(rowConfig)
+  } catch (error) {
+    logFailure(ctx, 'error', 'configuration is invalid', error)
+    throw error
+  }
+
+  const home = resolveHome()
+  const registry = buildProviders({ config })
+  const resolver = createBackendResolver({ ctx, registry, config })
+  const options = { ctx, resolver, registry, config, home }
+
+  ctx.effect(() => registerTools(ctx, options), 'agent-alliance: tools')
+
+  // Providers may be disabled by config; a disabled provider stays registered so
+  // the resolver can report it as unavailable instead of failing to resolve.
+  if (config.panel?.enabled !== false) {
+    registerPanel(ctx, options)
+  }
+}

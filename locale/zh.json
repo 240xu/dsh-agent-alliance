@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Agent 协同",
+    "description": "同时驱动官方 Codex、Claude Code 子代理后端以及 OpenCode、ZCode CLI：把任务派发出去，发起多 agent 圆桌，并把它们的外部会话历史导入 DSH。"
+  }
+}

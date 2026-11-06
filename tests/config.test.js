@@ -1,45 +1,162 @@
+// Tests for src/config.js: defaults, layer precedence, and loud validation.
+
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { loadConfig, defaultConfig } from '../src/config.js'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-test('缺文件返回内建默认', () => {
-  const cfg = loadConfig(path.join(os.tmpdir(), 'aa-nonexistent-' + Date.now() + '.json'))
-  assert.equal(cfg.providers.claude.enabled, true)
-  assert.equal(cfg.providers.codex.enabled, true)
-  assert.equal(cfg.providers.opencode.enabled, true)
-  assert.equal(cfg.providers.zcode.enabled, false)
-  assert.equal(cfg.defaults.timeoutMs, 300000)
-  assert.equal(cfg.defaults.maxConcurrent, 3)
+import { defaultConfig, loadConfig, configPath } from '../src/config.js'
+
+/**
+ * Create a fresh temporary directory for one test.
+ * @returns {string} absolute directory path
+ */
+function tmpDir() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'aa-config-'))
+}
+
+/**
+ * Write one legacy configuration file and return its path.
+ * @param {object} value JSON-serializable content
+ * @returns {string} absolute file path
+ */
+function writeFile(value) {
+  const file = path.join(tmpDir(), 'dsh-agent-alliance.json')
+  fs.writeFileSync(file, typeof value === 'string' ? value : JSON.stringify(value))
+  return file
+}
+
+test('defaults match the spec', () => {
+  const config = defaultConfig()
+  assert.deepEqual(config.providers.claude, { enabled: true, subagentProvider: 'claude-code' })
+  assert.deepEqual(config.providers.codex, { enabled: true, subagentProvider: 'codex' })
+  assert.deepEqual(config.providers.opencode, { enabled: true })
+  assert.deepEqual(config.providers.zcode, { enabled: false, commandTemplate: '', resumeTemplate: '' })
+  assert.deepEqual(config.defaults, { timeoutMs: 300000, maxConcurrent: 3, defaultCwd: '' })
+  assert.deepEqual(config.panel, { enabled: true })
+  assert.equal(config.legacyConfigFile, true)
 })
 
-test('用户配置深合并覆盖', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aa-cfg-'))
-  const file = path.join(dir, 'cfg.json')
-  fs.writeFileSync(file, JSON.stringify({
-    providers: { zcode: { enabled: true, commandTemplate: 'zcode -p {prompt}' } },
-    defaults: { timeoutMs: 5000 },
-  }))
-  const cfg = loadConfig(file)
-  assert.equal(cfg.providers.zcode.enabled, true)
-  assert.equal(cfg.providers.zcode.commandTemplate, 'zcode -p {prompt}')
-  // 未覆盖项保留默认
-  assert.equal(cfg.providers.claude.enabled, true)
-  assert.equal(cfg.defaults.maxConcurrent, 3)
-  assert.equal(cfg.defaults.timeoutMs, 5000)
-})
-
-test('坏 JSON 大声报错并带文件名', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aa-cfg-'))
-  const file = path.join(dir, 'bad.json')
-  fs.writeFileSync(file, '{oops')
-  assert.throws(() => loadConfig(file), /bad\.json/)
-})
-
-test('defaultConfig 是全新对象（调用方可自由改写）', () => {
-  const a = defaultConfig()
-  a.defaults.timeoutMs = 1
+test('defaultConfig returns a fresh object every call', () => {
+  const first = defaultConfig()
+  first.defaults.timeoutMs = 1
+  first.providers.claude.enabled = false
   assert.equal(defaultConfig().defaults.timeoutMs, 300000)
+  assert.equal(defaultConfig().providers.claude.enabled, true)
+})
+
+test('missing legacy file falls back to defaults', () => {
+  const file = path.join(tmpDir(), 'absent.json')
+  const config = loadConfig(undefined, { file })
+  assert.deepEqual(config, defaultConfig())
+})
+
+test('empty row config ({}, null, undefined) is a valid empty layer', () => {
+  const file = path.join(tmpDir(), 'absent.json')
+  for (const row of [{}, null, undefined]) {
+    const config = loadConfig(row, { file })
+    assert.equal(config.defaults.timeoutMs, 300000)
+    assert.equal(config.providers.claude.enabled, true)
+  }
+})
+
+test('precedence: defaults < legacy file < row config', () => {
+  const file = writeFile({
+    defaults: { timeoutMs: 111111, maxConcurrent: 2 },
+    providers: { claude: { enabled: false }, zcode: { enabled: true } },
+  })
+  const config = loadConfig({
+    defaults: { timeoutMs: 222222 },
+    providers: { claude: { enabled: true, subagentProvider: 'my-claude' } },
+  }, { file })
+  // Row config wins.
+  assert.equal(config.defaults.timeoutMs, 222222)
+  assert.equal(config.providers.claude.enabled, true)
+  assert.equal(config.providers.claude.subagentProvider, 'my-claude')
+  // Legacy file wins over built-in defaults.
+  assert.equal(config.defaults.maxConcurrent, 2)
+  assert.equal(config.providers.zcode.enabled, true)
+  // Untouched defaults survive both layers.
+  assert.equal(config.defaults.defaultCwd, '')
+  assert.equal(config.panel.enabled, true)
+})
+
+test('deep merge keeps sibling keys at every level', () => {
+  const file = writeFile({ providers: { zcode: { commandTemplate: 'zcode -p {prompt}' } } })
+  const config = loadConfig({ providers: { zcode: { resumeTemplate: 'zcode -r {id}' } } }, { file })
+  assert.deepEqual(config.providers.zcode, {
+    enabled: false,
+    commandTemplate: 'zcode -p {prompt}',
+    resumeTemplate: 'zcode -r {id}',
+  })
+})
+
+test('legacyConfigFile: false in the row config skips the legacy file', () => {
+  const file = writeFile({ defaults: { timeoutMs: 111111 } })
+  const config = loadConfig({ legacyConfigFile: false }, { file })
+  assert.equal(config.defaults.timeoutMs, 300000)
+})
+
+test('legacyConfigFile: false in options skips the legacy file', () => {
+  const file = writeFile({ defaults: { timeoutMs: 111111 } })
+  const config = loadConfig({}, { file, legacyConfigFile: false })
+  assert.equal(config.defaults.timeoutMs, 300000)
+})
+
+test('malformed JSON fails loudly and names the file', () => {
+  const file = writeFile('{ oops')
+  assert.throws(() => loadConfig({}, { file }), (error) => {
+    assert.match(String(error.message), /not valid JSON/)
+    assert.ok(String(error.message).includes(file), 'message must name the file: ' + error.message)
+    return true
+  })
+})
+
+test('a non-object legacy document fails loudly and names the file', () => {
+  const file = writeFile('[1, 2, 3]')
+  assert.throws(() => loadConfig({}, { file }), (error) => {
+    assert.ok(String(error.message).includes(file), 'message must name the file: ' + error.message)
+    assert.match(String(error.message), /JSON object/)
+    return true
+  })
+})
+
+test('wrong value types are rejected with the offending key', () => {
+  const file = path.join(tmpDir(), 'absent.json')
+  assert.throws(() => loadConfig({ defaults: { timeoutMs: 'soon' } }, { file }), /defaults\.timeoutMs/)
+  assert.throws(() => loadConfig({ defaults: { maxConcurrent: 0 } }, { file }), /defaults\.maxConcurrent/)
+  assert.throws(() => loadConfig({ providers: { claude: { enabled: 'yes' } } }, { file }), /providers\.claude\.enabled/)
+  assert.throws(() => loadConfig({ providers: { claude: { subagentProvider: 7 } } }, { file }), /subagentProvider/)
+  assert.throws(() => loadConfig({ panel: { enabled: 'on' } }, { file }), /panel\.enabled/)
+  assert.throws(() => loadConfig({ legacyConfigFile: 'no' }, { file }), /legacyConfigFile/)
+  assert.throws(() => loadConfig({ providers: [] }, { file }), /providers/)
+})
+
+test('wrong value types in the legacy file name the file', () => {
+  const file = writeFile({ defaults: { maxConcurrent: 'many' } })
+  assert.throws(() => loadConfig({}, { file }), (error) => {
+    assert.ok(String(error.message).includes(file), 'message must name the file: ' + error.message)
+    assert.match(String(error.message), /defaults\.maxConcurrent/)
+    return true
+  })
+})
+
+test('a failing layer is never hidden by a good higher layer', () => {
+  const file = writeFile({ defaults: { timeoutMs: -1 } })
+  assert.throws(() => loadConfig({ defaults: { timeoutMs: 5000 } }, { file }), /defaults\.timeoutMs/)
+})
+
+test('configPath resolves against $DSH_HOME or an explicit home', () => {
+  const saved = process.env.DSH_HOME
+  try {
+    process.env.DSH_HOME = '/tmp/dsh-home-probe'
+    assert.equal(configPath(), '/tmp/dsh-home-probe/dsh-agent-alliance.json')
+    assert.equal(configPath('/home/custom'), '/home/custom/dsh-agent-alliance.json')
+    delete process.env.DSH_HOME
+    assert.match(configPath('/home/custom'), /\/home\/custom\/dsh-agent-alliance\.json$/)
+  } finally {
+    if (saved === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = saved
+  }
 })

@@ -1,64 +1,94 @@
 # dsh-agent-alliance
 
-DeepSeek Harness 双面插件：让 DSH 与 **Claude Code / Codex / OpenCode / ZCode** 深度协同——
-CLI 子代理派发、圆桌讨论、历史会话导入，以及**经 ACP 嵌入 DSH 原生子代理体系**。
+DeepSeek Harness 双面插件：让 DSH 与 **Claude Code / Codex / OpenCode / ZCode** 协同——
+优先走官方子代理后端派发，回落到各家 CLI 包装层；附带圆桌讨论、外部会话浏览与历史会话导入。
 
-## 能力总览
+> **0.2.0 是一次规范化重写**：对齐 DSH `0.2.1-rc.2`（会话格式 v4、jobs 契约、client-module 契约），
+> 并把 Codex / Claude Code 的派发切到官方实验化子代理包。从 0.1.0 升级见
+> [docs/MIGRATION-0.2.md](docs/MIGRATION-0.2.md)。
 
-### CLI 包装层（6 个模型工具）
+## 设计：两层派发
+
+派发一个任务时，插件按以下顺序选后端：
+
+| 顺序 | 后端 | 条件 | 特点 |
+|---|---|---|---|
+| 1 | `subagent`（官方） | 配置里 `subagentProvider` 指向的 provider 已注册在 `ctx.subagents`，**且** 调用方是一个活的 Agent | 官方实验包托管生命周期、模型、权限与沙箱；一次性、隔离、只回最终答复 |
+| 2 | `cli`（包装层） | 其余情况（无 Agent 身份、未装官方包、用到 `resumeSessionId`） | 直调本机 CLI；可续聊外部会话；历史会话可浏览/导入 |
+
+官方后端来自这两个包，在「设置 → 插件」里启用即可，插件会自动探测：
+
+- `@deepseek-ai/dsh-subagent-codex` → provider `codex`
+- `@deepseek-ai/dsh-subagent-claude-code` → provider `claude-code`
+
+官方子代理是**一次性**的：`resumeSessionId` 在这条路上会被明确拒绝，需要续聊请走 CLI 包装层
+（也可用 `agent_sessions` 找到外部会话 id 后显式指定）。每个工具结果都带 `backend` 字段，标明这次走的是哪条路。
+
+## 模型工具（6 个）
 
 | 工具 | 说明 |
 |---|---|
-| `agent_dispatch` | 无头派发任务；前台等待或后台 job（`job_output`/`job_kill`）；`resumeSessionId` 续聊；受 `maxConcurrent` 并发上限约束（排队可取消） |
-| `agent_roundtable` | 同一问题并发发给多个 agent，输出观点对比（默认后台） |
-| `agent_sessions` / `agent_session_read` | 浏览/读取外部 agent 本机历史会话 |
-| `agent_import_scan` / `agent_import` | 四格式历史会话事件级导入为 DSH 会话（幂等、自动归组工作区、预热投影缓存） |
+| `agent_dispatch` | 派发任务；前台等待或后台 job（`job_output`/`job_kill`）；受 `maxConcurrent` 并发上限约束（排队期间取消立即生效） |
+| `agent_roundtable` | 同一问题并发发给多个 agent，可跑 1–3 轮辩论（后续轮可见其他 agent 上一轮发言），输出对比文本 |
+| `agent_sessions` / `agent_session_read` | 浏览 / 读取外部 agent 本机历史会话（只读） |
+| `agent_import_scan` / `agent_import` | 扫描四家历史会话并事件级导入为可继续的 DSH 会话（幂等、自动归组工作区、预热投影缓存） |
 
-UI：dispatch/roundtable/import 均有原生形态卡片（terminal/generic），与宿主工具观感一致。
+工具描述里写明了成本：**派发会真实消耗目标 agent 的额度，且它可能在 cwd 内读写文件**——重要操作先征得同意。
 
-### 原生子代理嵌入层（ACP）
+## Web 面板
 
-- **opencode**：内建 ACP server，已挂载 provider `opencode`；原生工具
-  **`subagent_opencode`**（固定 provider + 钉实验模型 `opencode/x-preview-f-free`）
-- **claude**：经 `@zed-industries/claude-code-acp@0.16.2` 适配器挂载 provider `claude`
-  （运行前提：本地代理 `127.0.0.1:9316` 在线）
-- codex 无内建 ACP——需社区适配器或自写桥（见 ROADMAP）
+侧边栏「Agent 协同」入口 → 中央视图五标签：状态 / 外部会话 / 派发 / 圆桌 / 任务。
 
-### Web 面板
+实现走当前 client-module 契约：`__ModuleLoader__` 注册的 factory 返回 `{ inject, apply }`，
+通过 `ctx.slots` 注册到 `main` 与 `sidebar.panellist`，文案全部经 `ctx.locale` 的 zh/en 字典，
+样式只使用 `--dsw-alias-*` 皮肤令牌。数据来自 `/__agent-alliance/*` 端点。
 
-侧边栏「Agent 协同」入口（DOM 注入自愈）→ 中央视图四标签：
-状态（四家探测）/ 外部会话（查看·导入·归组标注）/ 派发任务 / 圆桌。
-样式完全骑 `--dsw-*` 皮肤令牌；文案 zh/en 经 locale 服务跟随客户端语言并实时切换。
-数据源：`/__agent-alliance/*` 七端点。
+**所有 HTTP 端点先过连接信任校验**（`ctx.connection.admit`），未通过直接 401/403/503，不会触达外部 agent。
+
+端点一览：
+
+| 方法 + 路径 | 用途 |
+|---|---|
+| `GET /state` | provider 清单（id/kind/available）+ 最近派发 |
+| `GET /sessions` `GET /session-content` | 外部会话列表 / 单会话内容 |
+| `POST /import` | 导入外部会话 |
+| `POST /dispatch` | 派发（无 Agent 身份，固定走 CLI 后端） |
+| `POST /roundtable` | 发起圆桌（返回 `jobId`） |
+| `GET /tasks` `GET /tasks/output` `POST /tasks/kill` | 任务中心的列出 / 增量读 / 取消 |
 
 ## 安装
 
 ```jsonc
 // ~/.dsh/profiles/web/package.json
-"dependencies": { "dsh-agent-alliance": "file:/…/dsh-agent-alliance" }
+"dependencies": { "dsh-agent-alliance": "link:/path/to/dsh-agent-alliance" }
 "dsh": { "profile": { "bundles": [ …, "dsh-agent-alliance" ] } }
 ```
-另需 pnpm add `@deepseek-ai/dsh-subagent-acp@next`（原生子代理后端）与
-`@zed-industries/claude-code-acp`（claude 适配器，可选）。
+
+或让 Plugin Manager 从本地目录安装（`install_bundle` 指向包目录）。
+
+**运行时零 npm 依赖**：包内不 import 任何 `@deepseek-ai/*`，所以 rc 版本升级不会让插件失联。
+官方后端包由 DSH 自身安装与解析，插件只在运行时按名称探测 `ctx.subagents`。
 
 ## 配置
 
-`~/.dsh/dsh-agent-alliance.json`（缺省全内建）：
+优先级：`cordis.patch.yml` 行内 `config` > `~/.dsh/dsh-agent-alliance.json`（`legacyConfigFile: false` 可关闭）> 内建默认。
 
-```json
-{
-  "providers": {
-    "claude":   { "enabled": true },
-    "codex":    { "enabled": true },
-    "opencode": { "enabled": true },
-    "zcode":    { "enabled": false, "commandTemplate": "" }
-  },
-  "defaults": { "timeoutMs": 300000, "maxConcurrent": 3, "defaultCwd": "" }
-}
+```yaml
+- id: agent-alliance
+  config:
+    providers:
+      claude:   { enabled: true, subagentProvider: 'claude-code' }
+      codex:    { enabled: true, subagentProvider: 'codex' }
+      opencode: { enabled: true }
+      zcode:    { enabled: false, commandTemplate: '', resumeTemplate: '' }
+    defaults: { timeoutMs: 300000, maxConcurrent: 3, defaultCwd: '' }
+    panel: { enabled: true }
+    legacyConfigFile: true
 ```
 
-- `maxConcurrent`：同时派发到外部 agent 的在飞上限；排队期间取消立即生效
-- zcode 走 `commandTemplate` 模板（`{prompt}` `{session}` `{cwd}`，单引号安全转义）
+- `subagentProvider` 省略即该家只走 CLI 包装层
+- `zcode` 走 `commandTemplate` 模板（`{prompt}` `{session}` `{cwd}`，单引号安全转义）
+- `maxConcurrent` 限制同时派发到外部 agent 的在飞数量；排队期间取消立即出队
 - 各家探测：claude 经 grun；codex 绝对 node 入口；opencode 强制 TMPDIR 归一；
   宿主环境缺失时 runner 自动补 PATH/HOME/TMPDIR
 
@@ -68,22 +98,29 @@ UI：dispatch/roundtable/import 均有原生形态卡片（terminal/generic）�
 - codex：session_meta/首条非注入 user 作标题
 - opencode：text 部件 + **tool 部件映射**（含 error 状态）
 - zcode：按已验证 db.sqlite schema 只读读取（compaction 跳过）
-- 落盘契约对齐宿主严格校验器：信封七键 / seq 从 0 连续 / 头含 version /
-  turn/end 带 completed reason / lossless JSON
+- 落盘对齐会话格式 v4：`seq` 从 0 连续、surface 事件带 `surfaceOp`、assistant 输出写单条
+  `assistant/message`（含 `stream` 记录）、`session/title` 收尾、lossless JSON；
+  写入走 `sessionPersistence.create → handle.append → flush → close`
 
 ## 安全须知
 
 - 派发真实消耗对应 agent 的 API 额度，且可能在其 cwd 内读写文件——重要操作先征得同意
-- 导入对外部存储只读；台账 `~/.dsh/agent-alliance/imports.json` 幂等
+- 导入对外部存储只读；台账 `<DSH_HOME>/agent-alliance/imports.json` 原子写入、幂等
+- HTTP 端点全部经过连接信任校验，面板发起的任务是无主 job（不绑定会话），取消同样走 `jobs.kill`
 - client 入口受 `tests/manifest-guard.test.js` 保护（2026-08-21 web 连崩事故防线）
 
 ## 开发
 
 ```bash
-node --test --test-timeout=5000 'tests/*.test.js'   # 全量测试
-node tests/.probe-real.mjs                          # 真实探测四家 CLI
-node tests/.probe-browse.mjs                        # 真实浏览三家会话（只读）
+node --test 'tests/*.test.js'          # 全量测试，零外部依赖、不消耗额度
+node --check index.js && node --check client.js
 ```
 
-文档：`docs/SPEC.md`（架构）、`docs/VERIFICATION-P1.md`（验证记录）、
-`docs/ROADMAP.md`（后续计划）。
+测试全用 fixture 与假 ctx 服务驱动：不真调外部 CLI、不需要 DSH 包可解析。
+
+文档：[docs/SPEC-v2.md](docs/SPEC-v2.md)（0.2.0 契约）、[docs/MIGRATION-0.2.md](docs/MIGRATION-0.2.md)（升级指引）、
+[docs/ROADMAP.md](docs/ROADMAP.md)（后续计划）。
+
+## License
+
+MIT

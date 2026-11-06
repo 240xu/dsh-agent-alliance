@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Agent Alliance",
+    "description": "Works with the official Codex and Claude Code subagent backends plus the OpenCode and ZCode CLIs: dispatch work to them, run multi-agent roundtables, and import their external session histories into DSH."
+  }
+}
