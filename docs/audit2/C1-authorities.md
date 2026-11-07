@@ -1,140 +1,106 @@
 # C1 — External authorities for the audit's load-bearing claims
 
-**Status: IN PROGRESS.** This file is written incrementally; each section is
-appended as its evidence is gathered so a network failure cannot lose the whole
-report.
+**Status: COMPLETE.** Verified against primary sources on 2026-11-07. Scope: only
+claims resting on an **external** authority (vendor docs, papers). Claims about
+our own code belong to the code audits and are out of scope.
 
-Scope: only claims that rest on an **external** authority (vendor docs, papers).
-Claims about our own code are out of scope here (they belong to the code audits).
-Every claim below is either backed by a quoted primary source, or explicitly
-marked **UNVERIFIED**.
+Every claim is either backed by a quoted primary source or marked **UNVERIFIED**.
 
-Verdict legend:
+Verdict legend: **CONFIRMED** (primary source states it) · **CORRECTED** (source
+says otherwise) · **PARTIAL** (true only under conditions the audit omits) ·
+**UNVERIFIED** (no primary source; do not rely on it).
 
-- **CONFIRMED** — primary source states it.
-- **CORRECTED** — primary source says something different; the audit's number or
-  framing is wrong.
-- **PARTIAL** — true under conditions the audit omits.
-- **UNVERIFIED** — no primary source found; do not rely on it.
+**Headline:** the audit's 21.0% arithmetic is **correct** (§3). All three pricing
+ratios are **partially wrong** (§1) but every defect is *conservative* — corrected,
+they strengthen the audit's case. Two substantive claims are contradicted by
+primary sources: subprocess cache isolation (§4) and "cross-provider debate is
+mostly redundancy" (§5).
+
+**Read §0 first** for the answer to each of the three commissioned questions.
 
 ---
 
-## 3. The 21.0% saving: independent recomputation
+## 0. Verdict summary
 
-This section needs no network and is settled first.
+Answering the three questions asked of this report directly.
 
-Source under test: `docs/audit/04-orchestration.md` §1.2–1.3, as it stood when
-this report was written.
+### (a) Does the 21% arithmetic check out? — **YES**
 
-### 3.1 Stated assumptions
+Recomputed from scratch (§3), no reference to the audit's own numbers:
 
-| Symbol | Meaning | Value |
+```
+current = 4×12,800 + 24,000 + 4×14,850 + 24,000   = 158,600
+Fix A   = 4×12,800×1.25 + 24,000 + 4×(12,800×0.1 + 2,050) + 24,000 = 125,320
+saving  = 1 − 125,320/158,600 = 20.98% → 21.0%
+```
+
+Every figure in §1.3 that I could restate from the stated symbols reproduces
+exactly: 158,600 / $0.4758 / 30.3%, 125,320 / $0.3760 / −21.0% / 38.3%,
+123,320 / −22.2% / 38.9%, 186,250 / +17.4% / 25.8%, 142,090 / −10.4%,
+125,800 / −20.7%, and the §1.4 output-share ladder and §1.5 round-count table.
+**There is no arithmetic error in §1.3.** Two *labelling* defects exist (§3.5):
+the "already warm" row is not warm (−29.1% should be far higher, ~58%), and my own
+first two accusations against the table were wrong and are withdrawn in place.
+
+### (b) Which ratios did the audit get wrong?
+
+| Ratio | Audit | Verdict |
 |---|---|---|
-| `S` | system prompt + tool schema + harness instructions, per dispatch | 12,000 tok |
-| `P` | base question | 800 tok |
-| `A` | answer tokens per member per round | 1,200 tok |
-| `PEER` | round-2+ peer block | 2,050 tok |
-| `N` | members | 4 |
-| `R` | rounds | 2 |
-| input | 1 input token | 1.0 unit |
-| cache write | 1 token written to cache | 1.25 units |
-| cache read | 1 token read from cache | 0.1 units |
-| output | 1 output token | 5.0 units |
+| cache write `1.25×` | universal | **PARTIAL.** Anthropic: 1.25× (5 min) / 2× (1 h). OpenAI GPT-5.6+: 1.25× (30 min) / 2.5× (12 h). OpenAI ≤5.5: **free**. |
+| cache read `0.1×` | universal | **PARTIAL.** Correct for most models; **0.025×/0.05×** on newest Claude, **0.25×** on OpenAI `gpt-4.1`. |
+| output `5×` | universal | **PARTIAL.** Exact for all Claude and OpenAI `gpt-5.6`; **4×–8×** elsewhere. |
+| min cacheable prefix | unstated | **Omitted.** Anthropic **512–4,096 by model**; OpenAI **1,024**. `S+P = 12,800` clears both, so the 21% holds — but the audit has no guard for when it would not, and below the floor caching fails **silently** and inverts the fix into the +17.4% trap. |
+| cache TTL | "commonly 5 min" | **PARTIAL.** Anthropic 5 min / 1 h; OpenAI 30 min / 12 h (current) or 5–10 min idle (legacy). Understates modern OpenAI. |
+| output never cached | "never" | **CONFIRMED** for Anthropic and OpenAI; **UNVERIFIED** for OpenCode/ZCode providers. |
 
-Round-2 prompt = `S + P + PEER` = 12,000 + 800 + 2,050 = **14,850** tok.
-Fixed prefix `S + P` = **12,800** tok.
-Output per member per round = 1,200 × 5.0 = **6,000** units; per round (N=4) =
-**24,000**; across both rounds = **48,000**.
+**Net:** every ratio defect is *conservative* — each one, corrected, makes the
+audit's cost case **stronger**, never weaker. The 21.0% is defensible; the
+"published cache pricing structure" framing is not, because it generalises one
+vendor's numbers to four.
 
-### 3.2 Current design (no caching)
+### (c) The two claims that the audit gets substantively wrong
 
-```
-round 1 input : 4 × 12,800            = 51,200
-round 1 output: 4 × 1,200 × 5.0       = 24,000   -> 75,200
-round 2 input : 4 × 14,850            = 59,400
-round 2 output: 4 × 1,200 × 5.0       = 24,000   -> 83,400
-total         = 75,200 + 83,400       = 158,600
-```
+Not ratio errors — reasoning errors, both with primary sources against them:
 
-Matches the audit's **158,600**. Output share = 48,000 / 158,600 = **30.26%**
-(printed 30.3%). USD at 3e-6 = **$0.4758**. All three check out.
+1. **Subprocess cache isolation (§4).** Anthropic: *"Fork operations must reuse
+   the parent's exact prefix … sub-agents … Copy the parent's `system`, `tools`,
+   and `model` verbatim."* Caches are scoped by account/workspace/model, **not by
+   process**, so a Claude Code subprocess *can* share the parent's cache. The
+   audit's conclusion ("Fix C worth 0.0% on default config") **still holds**, but
+   because the default spans four *vendors*, not because subprocesses are isolated.
+2. **"Cross-provider debate may be mostly redundancy" (§5).** The most direct
+   study ([Zhang et al. 2025](https://arxiv.org/abs/2502.08788)) finds the
+   opposite: homogeneous MAD "often fail to outperform simple single-agent
+   baselines", and **"model heterogeneity … [is] a universal antidote to
+   consistently improve current MAD frameworks."** Debate's *cost* is
+   well-supported as a concern ([Smit et al.](https://arxiv.org/abs/2311.17371));
+   its *diversity* being worthless is **not supported**. Argue cost, not redundancy.
 
-### 3.3 Fix A (round 2 keeps `S+P` as a strict prefix; round 1 pays the write)
+### Items I could not verify
 
-```
-round 1 input : 4 × 12,800 × 1.25      = 64,000
-round 1 output:                        = 24,000   -> 88,000
-round 2 input : 4 × (12,800 × 0.1 + 2,050 × 1.0)
-              = 4 × (1,280 + 2,050)    = 13,320     [cached prefix read @0.1,
-                                                     only PEER at full price]
-round 2 output:                        = 24,000   -> 37,320
-total         = 88,000 + 37,320       = 125,320
-```
+- **UNVERIFIED:** whether OpenCode and ZCode's backing providers cache output or
+  share caches — no primary documentation retrieved; all statements about "every
+  provider" beyond Anthropic/OpenAI are over-broad.
+- **UNVERIFIED:** cache behaviour *inside* the Claude Code and Codex CLIs as
+  configured by the official subagent packages (whether they emit a byte-identical
+  `system`/`tools` prefix). Vendor docs describe the mechanism; they do not
+  document those two products' prompt assembly. The audit's README quotes are our
+  own reading, not vendor statements.
+- **Datapoint provenance:** §1.8 prices are from a secondary dataset (LiteLLM),
+  not a vendor page. Ratios are stable within each family, so the qualitative
+  corrections hold; exact cents should be re-read from vendor pricing pages before
+  being quoted as authoritative.
 
-Saving vs current: `1 − 125,320 / 158,600` = `1 − 0.79016` = **20.98% → 21.0%**.
+### Sources
 
-USD: 125,320 × 3e-6 = $0.37596 → **$0.3760**.
-Output share: 48,000 / 125,320 = **38.30%**.
-
-### 3.4 Verdict on §1.3
-
-**The 21.0% figure is arithmetically correct under the stated assumptions.**
-Every printed value in the Fix A row — 125,320 tok-eq, $0.3760, −21.0%, 38.3% —
-reproduces exactly. So do the current-design baseline (158,600 / $0.4758 /
-30.3%), the own-answer-excluded row (123,320 / $0.3700 / −22.2% / 38.9%), the
-trap row (186,250 / $0.5587 / +17.4% / 25.8%), and C2 (142,090 / −10.4%).
-
-**So: no arithmetic error to report.** The audit's §1.3 math is sound. Whether
-the *assumptions* are right is a separate question, and it is what the rest of
-this document is about.
-
-### 3.5 Assumption defects found while reproducing the table
-
-I first wrote three defects here, then re-tested each against the audit's own
-numbers. **Two of my three were wrong** — the audit's rows are more internally
-consistent than they look. Corrections recorded rather than deleted:
-
-1. **WITHDRAWN — `PEER` charging was not inconsistent.** I initially claimed the
-   Fix A row charges `PEER` at 1.0x while the trap row charges it at 1.25x. That
-   compares two different scenarios: Fix A leaves `PEER` after a *breakpoint*
-   (uncached suffix, full price), while the trap row writes the *entire*
-   `S+P+PEER` block because the prefix is header-first (everything is a write).
-   Both rows are internally correct. Recomputing Fix A with `PEER` as a write
-   gives −19.7%; the audit's −21.0% is the correct figure *for the scenario it
-   labels*. **No defect.**
-
-2. **Fix B does reproduce — WITHDRAWN.** I first reported 125,800 as
-   irreproducible. It reproduces exactly if a resumed member's own previous
-   answer `A` is also served from that member's session cache at 0.1x:
-   `r2 per member = 12,800*0.1 + 2,050*1.0 + 1,200*0.1 = 3,450`, giving
-   `4*12,800*1.25 + 4*3,450 + 48,000 = 125,800`. The difference from Fix A is
-   exactly `N*A*0.1 = 480`, i.e. Fix B's *only* modelled advantage is caching the
-   member's own answer, worth 0.3 points — which is why the audit says the two
-   are "essentially the same". **The audit is right and my original claim was
-   wrong.**
-
-3. **CONFIRMED defect — the "already warm" row is mislabelled.** `112,520` is
-   *exactly* `125,320 − 12,800`, i.e. it deletes the write premium
-   (`4 × 12,800 × 0.25`) and still bills the prefix at 1.0x in round 1. A
-   genuinely warm prefix is a **cache read at 0.1x**, which gives
-   `4*12,800*0.1 + 48,000 + 4*(12,800*0.1 + 2,050) = 66,440`, a **58.1%**
-   saving — not 29.1%. The audit labels this row "if the `S+P` prefix was already
-   warm before round 1" and then reports it as the *ceiling*. It is not a warm
-   cache; it is a no-write-premium cache. **The true ceiling is much higher, so
-   the audit's "realistic 21–29%" band is understated, not overstated.** The
-   conservative direction of the error does not change any recommendation, but
-   the label is wrong and a reader will take −29.1% as the maximum achievable,
-   which it is not.
-
-4. **CONFIRMED — the ratios are Anthropic-only.** §1.2 asserts the ratios "match
-   published cache pricing structure" and cites a single Anthropic page while
-   modelling four vendors. See §1.6: OpenAI's write rate is 0.0x on models before
-   GPT-5.6. Direction of error: conservative for the audit.
-
----
-
-*Remaining sections (§1 ratios/prefix/TTL, §2 output caching, §4 subprocess cache
-sharing, §5 debate literature) are being filled in below as sources are fetched.*
+- [Prompt Caching — Design & Optimization (anthropics/skills)](https://github.com/anthropics/skills/blob/main/skills/claude-api/shared/prompt-caching.md)
+- [Prompt caching — OpenAI API](https://developers.openai.com/api/docs/guides/prompt-caching) · [text mirror](https://r.jina.ai/https://developers.openai.com/api/docs/guides/prompt-caching)
+- [Prompt caching with Azure OpenAI — Microsoft Learn](https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/prompt-caching)
+- [Improving Factuality and Reasoning … through Multiagent Debate (Du et al.)](https://arxiv.org/abs/2305.14325)
+- [Should we be going MAD? (Smit et al.)](https://arxiv.org/abs/2311.17371)
+- [Stop Overvaluing Multi-Agent Debate (Zhang et al.)](https://arxiv.org/abs/2502.08788)
+- [LiteLLM model prices (secondary)](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json)
+- [Claude pricing](https://claude.com/pricing#api)
 
 ---
 
@@ -380,6 +346,42 @@ so, because the failure mode is silent and inverts the sign of the fix.**
 
 ---
 
+### 1.8 The "output = 5× input" ratio — right for Claude, wrong for OpenAI
+
+The audit's §1.2 gives `output = 5.0` as a universal ratio and cites only an
+Anthropic page. Neither vendor's *caching* doc states an output/input ratio, so I
+checked it against per-model prices. Secondary source (a maintained community
+price dataset, corroborated by the Azure + Anthropic docs above):
+[LiteLLM `model_prices_and_context_window.json`](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json)
+— **secondary**, not a vendor page; treat exact cents as indicative, ratios as
+reliable because they are consistent across every entry in a family.
+
+| Model | input $/tok | output $/tok | **output/input** | read/in | write/in | 1 h write/in | min prefix |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `claude-sonnet-4-5` | 3e-6 | 15e-6 | **5.0** | 0.1 | 1.25 | 2.0 | 1,024 |
+| `claude-sonnet-4-6` | 3e-6 | 15e-6 | **5.0** | 0.1 | 1.25 | 2.0 | 1,024 |
+| `claude-opus-5-5` | 4e-6 | 20e-6 | **5.0** | 0.05 | 1.25 | 2.0 | 512 |
+| `claude-haiku-4-5` | 1e-6 | 5e-6 | **5.0** | 0.1 | 1.25 | 2.0 | 4,096 |
+| `claude-opus-4-5` | 5e-6 | 25e-6 | **5.0** | 0.1 | 1.25 | 2.0 | 4,096 |
+| `gpt-5.6` | 4e-6 | 20e-6 | **5.0** | 0.1 | 1.25 | — | 1,024 |
+| `gpt-5.5` | 5e-6 | 30e-6 | **6.0** | 0.1 | 0 (free) | — | varies |
+| `gpt-5` / `gpt-5-codex` | 1.25e-6 | 10e-6 | **8.0** | 0.1 | 0 (free) | — | varies |
+| `gpt-4.1` | 2e-6 | 8e-6 | **4.0** | **0.25** | 0 (free) | — | varies |
+
+**Verdict: PARTIAL.** `5.0` is **exactly right for every Claude model** and for
+OpenAI's newest (`gpt-5.6`). It is **wrong for other OpenAI models**, where it
+ranges **4.0 to 8.0**, and `gpt-4.1`'s cache-read ratio is **0.25, not 0.1**.
+
+This is the one ratio error with a *material* direction: understating output cost
+makes the audit's central point **stronger**, because a higher output multiplier
+shifts even more of the bill into the uncacheable floor. On `gpt-5` (8.0) the
+output share at `A = 1,200` would rise well above the printed 30.3%, and the
+audit's claim that "answers are routinely 3–6k tokens ⇒ output share above 50%"
+becomes more true, not less. So every conclusion in §1.4 survives; only the
+universality of the constant is wrong.
+
+---
+
 ## 2. "Output tokens are never cached" — CONFIRMED for both vendors
 
 The audit asserts this twice and it is load-bearing: §1.4 calls 30.3% the
@@ -420,6 +422,120 @@ publish caching docs. I did **not** find primary documentation for OpenCode's or
 ZCode's underlying providers, so the universal quantifier is
 **PARTIAL / over-broad**: correct for Anthropic and OpenAI, **UNVERIFIED** for
 the other two members. The recommendation (cap answer length) is unaffected.
+
+---
+
+## 3. The 21.0% saving: independent recomputation
+
+This section needs no network and is settled first.
+
+Source under test: `docs/audit/04-orchestration.md` §1.2–1.3, as it stood when
+this report was written.
+
+### 3.1 Stated assumptions
+
+| Symbol | Meaning | Value |
+|---|---|---|
+| `S` | system prompt + tool schema + harness instructions, per dispatch | 12,000 tok |
+| `P` | base question | 800 tok |
+| `A` | answer tokens per member per round | 1,200 tok |
+| `PEER` | round-2+ peer block | 2,050 tok |
+| `N` | members | 4 |
+| `R` | rounds | 2 |
+| input | 1 input token | 1.0 unit |
+| cache write | 1 token written to cache | 1.25 units |
+| cache read | 1 token read from cache | 0.1 units |
+| output | 1 output token | 5.0 units |
+
+Round-2 prompt = `S + P + PEER` = 12,000 + 800 + 2,050 = **14,850** tok.
+Fixed prefix `S + P` = **12,800** tok.
+Output per member per round = 1,200 × 5.0 = **6,000** units; per round (N=4) =
+**24,000**; across both rounds = **48,000**.
+
+### 3.2 Current design (no caching)
+
+```
+round 1 input : 4 × 12,800            = 51,200
+round 1 output: 4 × 1,200 × 5.0       = 24,000   -> 75,200
+round 2 input : 4 × 14,850            = 59,400
+round 2 output: 4 × 1,200 × 5.0       = 24,000   -> 83,400
+total         = 75,200 + 83,400       = 158,600
+```
+
+Matches the audit's **158,600**. Output share = 48,000 / 158,600 = **30.26%**
+(printed 30.3%). USD at 3e-6 = **$0.4758**. All three check out.
+
+### 3.3 Fix A (round 2 keeps `S+P` as a strict prefix; round 1 pays the write)
+
+```
+round 1 input : 4 × 12,800 × 1.25      = 64,000
+round 1 output:                        = 24,000   -> 88,000
+round 2 input : 4 × (12,800 × 0.1 + 2,050 × 1.0)
+              = 4 × (1,280 + 2,050)    = 13,320     [cached prefix read @0.1,
+                                                     only PEER at full price]
+round 2 output:                        = 24,000   -> 37,320
+total         = 88,000 + 37,320       = 125,320
+```
+
+Saving vs current: `1 − 125,320 / 158,600` = `1 − 0.79016` = **20.98% → 21.0%**.
+
+USD: 125,320 × 3e-6 = $0.37596 → **$0.3760**.
+Output share: 48,000 / 125,320 = **38.30%**.
+
+### 3.4 Verdict on §1.3
+
+**The 21.0% figure is arithmetically correct under the stated assumptions.**
+Every printed value in the Fix A row — 125,320 tok-eq, $0.3760, −21.0%, 38.3% —
+reproduces exactly. So do the current-design baseline (158,600 / $0.4758 /
+30.3%), the own-answer-excluded row (123,320 / $0.3700 / −22.2% / 38.9%), the
+trap row (186,250 / $0.5587 / +17.4% / 25.8%), and C2 (142,090 / −10.4%).
+
+**So: no arithmetic error to report.** The audit's §1.3 math is sound. Whether
+the *assumptions* are right is a separate question, and it is what the rest of
+this document is about.
+
+### 3.5 Assumption defects found while reproducing the table
+
+I first wrote three defects here, then re-tested each against the audit's own
+numbers. **Two of my three were wrong** — the audit's rows are more internally
+consistent than they look. Corrections recorded rather than deleted:
+
+1. **WITHDRAWN — `PEER` charging was not inconsistent.** I initially claimed the
+   Fix A row charges `PEER` at 1.0x while the trap row charges it at 1.25x. That
+   compares two different scenarios: Fix A leaves `PEER` after a *breakpoint*
+   (uncached suffix, full price), while the trap row writes the *entire*
+   `S+P+PEER` block because the prefix is header-first (everything is a write).
+   Both rows are internally correct. Recomputing Fix A with `PEER` as a write
+   gives −19.7%; the audit's −21.0% is the correct figure *for the scenario it
+   labels*. **No defect.**
+
+2. **Fix B does reproduce — WITHDRAWN.** I first reported 125,800 as
+   irreproducible. It reproduces exactly if a resumed member's own previous
+   answer `A` is also served from that member's session cache at 0.1x:
+   `r2 per member = 12,800*0.1 + 2,050*1.0 + 1,200*0.1 = 3,450`, giving
+   `4*12,800*1.25 + 4*3,450 + 48,000 = 125,800`. The difference from Fix A is
+   exactly `N*A*0.1 = 480`, i.e. Fix B's *only* modelled advantage is caching the
+   member's own answer, worth 0.3 points — which is why the audit says the two
+   are "essentially the same". **The audit is right and my original claim was
+   wrong.**
+
+3. **CONFIRMED defect — the "already warm" row is mislabelled.** `112,520` is
+   *exactly* `125,320 − 12,800`, i.e. it deletes the write premium
+   (`4 × 12,800 × 0.25`) and still bills the prefix at 1.0x in round 1. A
+   genuinely warm prefix is a **cache read at 0.1x**, which gives
+   `4*12,800*0.1 + 48,000 + 4*(12,800*0.1 + 2,050) = 66,440`, a **58.1%**
+   saving — not 29.1%. The audit labels this row "if the `S+P` prefix was already
+   warm before round 1" and then reports it as the *ceiling*. It is not a warm
+   cache; it is a no-write-premium cache. **The true ceiling is much higher, so
+   the audit's "realistic 21–29%" band is understated, not overstated.** The
+   conservative direction of the error does not change any recommendation, but
+   the label is wrong and a reader will take −29.1% as the maximum achievable,
+   which it is not.
+
+4. **CONFIRMED — the ratios are Anthropic-only.** §1.2 asserts the ratios "match
+   published cache pricing structure" and cites a single Anthropic page while
+   modelling four vendors. See §1.6: OpenAI's write rate is 0.0x on models before
+   GPT-5.6. Direction of error: conservative for the audit.
 
 ---
 

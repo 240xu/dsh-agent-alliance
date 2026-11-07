@@ -604,3 +604,30 @@ test('POST import is idempotent and returns the import result', async () => {
   const second = await request(routes, 'POST', ROUTE_PREFIX + '/import', { provider: 'p1', sessionId: 's1' })
   assert.equal(second.json.result.status, 'already-imported')
 })
+
+test('GET /state reports probed availability, not a configured-provider assumption', async () => {
+  const { webServer, routes } = mockWebServer()
+  const fakeRegistry = {
+    list: () => [{ id: 'p1', label: 'P1' }, { id: 'p2', label: 'P2' }],
+    get: () => undefined,
+    detectAll: async () => [
+      { id: 'p1', label: 'P1', available: true },
+      { id: 'p2', label: 'P2', available: false, detail: 'CLI not found' },
+    ],
+  }
+  // The resolver decides which rows exist; the registry decides availability.
+  const resolver = {
+    list: () => [{ id: 'p1', label: 'P1', kind: 'cli', available: true }, { id: 'p2', label: 'P2', kind: 'cli', available: true }],
+    resolve: (request) => ({ id: String(request.provider), label: String(request.provider), kind: 'cli', available: true, dispatch: async () => ({ text: 'x', backend: 'cli' }) }),
+  }
+  registerHttp(webServer, options({ resolver, registry: fakeRegistry }))
+  const response = await request(routes, 'GET', ROUTE_PREFIX + '/state')
+  assert.equal(response.status, 200)
+  const providers = response.json.providers
+  const p1 = providers.find((p) => p.id === 'p1')
+  const p2 = providers.find((p) => p.id === 'p2')
+  assert.equal(p1.available, true)
+  // A configured provider whose CLI is missing must not be advertised as usable.
+  assert.equal(p2.available, false)
+  assert.match(String(p2.detail), /not found/)
+})

@@ -1,6 +1,17 @@
 # Adversarial Audit A2 — refutation pass and fix stress-test
 
-**Subject:** `dsh-agent-alliance` 0.2.0, commit `2d68e3f`
+**Subject:** `dsh-agent-alliance` 0.2.0
+**Baseline re-verified at:** `b5693d8` (HEAD when this report was finalized)
+
+> **Staleness note, important.** I began this audit at commit `2d68e3f`. While I
+> was working, two fix commits landed: `2f6660e` ("close the five money- and
+> data-losing defects") and `b5693d8` ("stop treating CLI errors as answers").
+> `2f6660e` independently fixed claims **D** and **E** and applied patches
+> **P1** and **P2**. Every section below is re-verified against `b5693d8` and
+> states explicitly whether it is *still live* or *already fixed*. Two of my
+> four Part-1 verdicts therefore describe historical state; I say so rather than
+> quietly rewriting them, because the interesting result is **that the landed
+> P1 is the naive version whose defect I predict.**
 **Framework:** DSH `0.2.1-rc.2` installed at
 `/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/`
 
@@ -19,8 +30,19 @@ Read-only. Nothing in the plugin was modified.
 
 ### (D) "resumeSessionId is rejected only after startActivation spawns a billed child"
 
-**VERDICT: CONFIRMED** — I could not refute it, and I found the consequence is
-*worse* than the original claim states.
+**VERDICT: CONFIRMED AT `2d68e3f` — NOW FIXED at `2f6660e`.**
+As of `b5693d8` the guard sits at `src/backend.js:232`, above
+`await route.service.startActivation(...)` at `:237`. I verified the guard is
+now genuinely pre-spawn:
+
+```
+resolved kind: subagent
+resume error: resumeSessionId is not supported on the official subagent path …
+startActivation was called: 0 (0 = guard runs first)
+```
+
+The analysis below describes the defect as it existed, because it is the
+evidence base for patch **P2**.
 
 **What I attempted.**
 
@@ -36,14 +58,13 @@ Read-only. Nothing in the plugin was modified.
    executes exactly one turn; there is no continuation, resume, or pooling"
    (`README.md:95`). Refutation attempt fails: nothing upstream can reject it.
 
-2. *Does the plugin's guard run first in some path?* Only in the HTTP path,
-   trivially, because `src/http.js` passes `resumeSessionId` straight through
-   to a **CLI** backend (`src/http.js:396`) and never reaches the subagent
-   branch — `backendOf()` supplies no parent (`src/http.js:274-276`). So the
-   subagent path and the resume parameter can only meet through
-   `agent_dispatch`. In that path the order is fixed:
-   `src/backend.js:232` `await route.service.startActivation(...)` runs, and
-   only at `src/backend.js:248` does
+2. *Does the plugin's guard run first in some path?* At `2d68e3f`, only in the
+   HTTP path, trivially, because `src/http.js` passes `resumeSessionId` straight
+   through to a **CLI** backend and never reaches the subagent branch —
+   `backendOf()` supplies no parent (`src/http.js:274-276`). So the subagent
+   path and the resume parameter could only meet through `agent_dispatch`. In
+   that path the order was fixed: `await route.service.startActivation(...)`
+   ran at the old `src/backend.js:232`, and only at the old `:248` did
    `if (hasResumeId(request.resumeSessionId)) throw resumeRejection(...)` fire.
 
 3. *What does `startActivation` actually do before returning?* I traced it to
@@ -80,10 +101,11 @@ Read-only. Nothing in the plugin was modified.
   cheap failure — the plugin is only vulnerable on the path where start
   *succeeds*.
 
-**What would refute it (and does not exist):** a `signal.aborted`/`resume`
-precheck inside `SubagentRuntime.startActivation` before `provider.start`, or a
-`resumeSessionId` field in `SubagentStartRequest` that a provider validates.
-Neither is in the installed lib.
+**What would have refuted it (and does not exist):** a precheck inside
+`SubagentRuntime.startActivation` before `provider.start`, or a
+`resumeSessionId` field in `SubagentStartRequest` that a provider could
+validate. Neither is in the installed lib — which is why the fix had to live in
+the plugin, and does now.
 
 ---
 
@@ -91,6 +113,17 @@ Neither is in the installed lib.
 
 **VERDICT: OVERSTATED — mechanism real, reachability wrong.** I found a
 framework-level mitigation the prior audit missed for the *normal* tool path.
+**Additionally, the plugin-side gap is now fixed at `2f6660e`**: the semaphore
+fast path gained an up-front check (`src/tools.js:58-60`). Verified at `b5693d8`:
+
+```
+58:      if (signal?.aborted === true) {
+59:        return Promise.reject(new Error('aborted before start (maxConcurrent=' + limit + ')'))
+```
+
+Note the landed form rejects with a bare `Error`, not the `AbortError` the
+registry classifies as `ABORTED` — that is the flaw I describe at the end of
+this section, and it is now live code.
 
 **What I attempted.** I built a real `ToolRuntime`, registered a tool exactly
 the way the plugin does (raw `ctx.tools.register`, no `defineTool`), and called
@@ -267,8 +300,28 @@ it is applied naively (the way a report's "fix" block would be copy-pasted).
 
 ### P1 — `try/catch` around `jobs.start()` returning `undefined`
 
-**Verdict: DANGEROUS AS WRITTEN — it converts a capacity signal into silent
-inline execution, and it collapses two unrelated failures into one behaviour.**
+**Verdict: DANGEROUS AS WRITTEN — and it has ALREADY BEEN APPLIED in exactly
+that form (commit `2f6660e`), so the defect below is live at `b5693d8`.**
+
+The shipped code is `src/tools.js:130-141`:
+
+```js
+function startJob(ctx, spec) {
+  const jobs = serviceOf(ctx, 'jobs')
+  if (jobs === undefined || jobs === null || typeof jobs.start !== 'function') return undefined
+  try {
+    return jobs.start(spec)
+  } catch (error) {
+    const logger = serviceOf(ctx, 'logger')
+    if (logger !== undefined && typeof logger.warn === 'function') {
+      logger.warn('agent-alliance: background job unavailable, running inline: ' + String(...))
+    }
+    return undefined
+  }
+}
+```
+
+and the panel equivalent at `src/http.js:449-463`. Both catch **everything**.
 
 **The patch.** Wrap `startJob()` (`src/tools.js:123-127`) and the panel's
 `jobs.start` (`src/http.js:434`) in `try { … } catch { return undefined }`, so
@@ -287,7 +340,8 @@ the existing `jobId === undefined` fallback runs inline.
 ```
 
 I verified the last two are indistinguishable by shape — both are plain
-`Error` with no `code` and no `name` set by the registry:
+`Error` with no `code` and no `name` set by the registry — and re-verified that
+against the **shipped** `startJob` at HEAD:
 
 ```
 second start threw  : background job limit reached for this owner (limit: 1); use
@@ -302,13 +356,38 @@ patched function against a real registry configured `maxConcurrentJobsPerOwner:
 1`:
 
 ```
-job 1 (cap=1): agent-alliance-df4bbdbb1c7a40da
-job 2 (cap=1): undefined <- undefined => caller runs INLINE
-live job bodies started: 1 | active jobs now: 1
+job 1 (cap=2): agent-alliance-44eee8580ee84e58
+job 2 (cap=2): agent-alliance-6b13412573d84b68
+job 3 (cap=2): undefined <-- returned undefined => CALLER RUNS INLINE
 ```
 
-**New defect introduced.** The cap exists to protect the host from the exact
-workload this plugin generates (external agent processes). With the patch, the
+A third dispatch past a 2-job cap is silently converted into inline execution.
+
+**Aggravating detail: the warning that was supposed to make this visible never
+fires.** Both call sites fetch the logger with `serviceOf(ctx, 'logger')` /
+`ctx?.get?.('logger')`. In Cordis, `logger` is a **service object**, not a
+provider-registered service, so `ctx.get('logger')` returns `undefined` while
+`ctx.logger` is a function:
+
+```
+root.get('logger')   : undefined (undefined)
+root.logger          : function
+root.logger?.warn    : function
+```
+
+So `serviceOf` falls through to `ctx?.['logger']` — but only in the *fake-context*
+branch; on a real Cordis context
+(`dsh-tools`-style `ctx.get` returning `undefined`) the guard
+`if (resolved !== undefined) return resolved` misses, and the fallback
+`ctx?.[service]` throws `cannot get property "logger" without inject`
+(verified earlier: `viaProp: 'THREW: cannot get property "jobs" without
+inject'`), which `serviceOf` catches and converts to `undefined`. **Net result:
+no warning is ever logged, on the exact path the patch added to make the
+fallback observable.** I confirmed empirically: the probe above produced no
+`background job unavailable` line at all.
+
+**New defect introduced (LIVE at `b5693d8`).** The cap exists to protect the
+host from the exact workload this plugin generates (external agent processes). With the patch, the
 2nd, 3rd, … dispatch does not fail — it silently runs **synchronously inside the
 tool call / HTTP request**, bypassing the cap *and* the background-job output
 ring. The caller therefore waits for the full external CLI under a
@@ -325,8 +404,10 @@ response arrives (`setBusy(true)` at `:958`, cleared only in `finally` at
 appears frozen for minutes and the Cancel button never renders (it is gated on
 `jobId !== ''`, and `jobId` is empty on the inline path).
 
-**Correct form.** Catch *narrowly*: only treat the "no controller" and "no
-agent registry" conditions as "jobs unavailable", and **re-throw** the cap:
+**Correct form (still applicable — this is a live bug, not a hypothetical).**
+Catch *narrowly*: only treat the "no controller" and "no agent registry"
+conditions as "jobs unavailable", and **re-throw** the cap. Also use
+`ctx.logger` (the real accessor) rather than `ctx.get('logger')`:
 
 ```js
 function startJob(ctx, spec) {
@@ -335,8 +416,11 @@ function startJob(ctx, spec) {
   try { return jobs.start(spec) }
   catch (error) {
     const message = String(error?.message || '')
-    if (/no job controller serves|ownership requires the agent registry/.test(message)) return undefined
-    throw error            // cap, invalid kind, invalid label, bad outputLimitBytes
+    if (!/no job controller serves|ownership requires the agent registry/.test(message)) {
+      throw error          // cap, invalid kind, invalid label, bad outputLimitBytes
+    }
+    ctx.logger?.warn?.('agent-alliance: background job unavailable, running inline: ' + message)
+    return undefined
   }
 }
 ```
@@ -350,9 +434,9 @@ make this patch a one-liner without string matching).
 
 ### P2 — Hoisting the resume guard above `startActivation`
 
-**Verdict: SAFE — and it is the one patch in this set with no side effect I
-could construct.** Details are nonetheless worth stating, because the obvious
-implementation is subtly wrong.
+**Verdict: SAFE in effect — and it HAS LANDED (`2f6660e`), but it shipped with
+the exact ordering flaw I predicted below, so the diagnosis regression is
+live.**
 
 **The patch.** Move `if (hasResumeId(request.resumeSessionId)) throw
 resumeRejection(providerId, providerName)` from `src/backend.js:248` to before
@@ -366,15 +450,23 @@ resumeRejection(providerId, providerName)` from `src/backend.js:248` to before
    value fixed when `resolve()` chose the subagent path
    (`src/backend.js:327-336`). It does **not** need `activation`, so hoisting is
    mechanically possible with no data dependency.
-2. *Does it change the error for the `route === undefined` case?* Yes, and this
-   is the subtlety: at `src/backend.js:228-231`, if the provider was
-   unregistered between resolve and dispatch, the code throws
-   `'official subagent provider "…" is no longer registered'`. If the resume
-   guard is hoisted **above** that check, a stale-route call with a resume id
-   now reports "resumeSessionId is not supported" instead of "provider no
-   longer registered" — a **less accurate** diagnosis. Therefore the guard must
-   be hoisted above `startActivation` but **below** the `route === undefined`
-   check. Both are before the side effect, so this ordering is free.
+2. *Does it change the error for the `route === undefined` case?* **Yes — and
+   the shipped patch has this bug.** At HEAD the guard is at
+   `src/backend.js:232`, *above* the `route === undefined` check at `:233-236`.
+   I verified the resulting misdiagnosis against a backend whose provider was
+   unregistered after `resolve()`:
+
+   ```
+   stale-route + resume: resumeSessionId is not supported on the official subagent path …
+   stale-route, no resume: official subagent provider "claude-code" is no longer registered
+   ```
+
+   The first line is **wrong about the cause**: the call also failed because the
+   provider is gone, but the user is told their `resumeSessionId` was rejected.
+   The correct placement is above `startActivation` but *below* the
+   `route === undefined` check — both precede the side effect, so the ordering
+   costs nothing. This is a **low-severity live defect introduced by the fix**,
+   and it is the one thing in this report that is both new and actionable.
 3. *Does anything rely on the child existing?* No. The rejection is thrown, the
    `finally` block's `dispose()` is skipped entirely (no `activation` to
    dispose), and the caller gets the same `Error` message text. Nothing
@@ -446,7 +538,11 @@ pinned by a test rather than by a comment.
 ### P4 — Filtering roundtable members through `enabled` + `detectAll()`
 
 **Verdict: DANGEROUS — it would put up to 50 seconds of blocking subprocess
-probing inside a request the panel issues on every tab open.**
+probing inside a request the panel issues on every tab open.** *Not yet
+applied; this is the only one of the four patches still purely hypothetical.*
+Its premise is unchanged at HEAD: `resolver.list()` still hardcodes
+`available: true` at `src/backend.js:177,211,359,370`, verified. The exact same
+probe can be fixed for free — see the sub-section at the end.
 
 **The patch.** Have `/state` (and/or roundtable member selection) call
 `registry.detectAll()` and drop providers with `available !== true`, plus honor
@@ -535,36 +631,105 @@ zcode    detect.available = false | zcode 未启用
 
 So the panel's "providers" list claims four healthy backends on a host where
 **none** work. That is the defect worth fixing — and it can be fixed without
-putting `detectAll` on the request path, by reporting `available: undefined`
-(unknown) instead of a hardcoded `true`, or by caching detection at load.
+putting `detectAll` on the request path.
+
+**The cheap alternative P4 should have proposed.** `agent_dispatch`'s failure
+for an unavailable CLI is already accurate and already reaches the model:
+`provider.dispatch` throws `'claude dispatch 失败 (exit -1): spawn … ENOENT'`
+and the registry materializes it as a structured tool error (verified in the
+framework audit). So the panel does not need ground truth to be *useful*; it
+needs to stop asserting a fact it has not checked. Change `available: true` to
+`available: undefined` plus a `detail: 'not probed'`, and let the UI render
+three states instead of two. That is a two-line change with no subprocess, no
+cache, and no timeout risk — strictly better than P4 at every cost point.
+
+**Update — P4 was written while I audited, and I reviewed the actual code.**
+An uncommitted working-tree change to `src/http.js` (not mine; another
+teammate's) implements P4 with a 30 s TTL cache (`DETECT_TTL_MS`). I tested that
+implementation directly rather than the hypothetical. Two results:
+
+1. **Good news — the TTL defeats the sequential storm I predicted.** A
+   four-tab sweep now invokes `detectAll` **once**, not four times:
+
+   ```
+   sequential 4-tab sweep   -> detectAll invocations: 1
+   after TTL expiry         -> detectAll invocations: 2
+   ```
+
+   And the tabs are genuinely exclusive (`client.js:1211-1217` renders one
+   `Tab` at a time), so the four `useLoad('/state')` mounts never fire
+   simultaneously in practice. My concurrency worry was overstated; the patch
+   author solved it.
+
+2. **New defect — the fail-open branch contradicts its own comment, and it
+   re-creates the exact lie the patch exists to remove.** The code is:
+
+   ```js
+   const probe = byId.get(info.id)
+   if (probe === undefined) return info        // comment: "Unknown stays unavailable"
+   ```
+
+   `info` comes from `resolver.list(undefined)`, whose `available` is the
+   hardcoded `true` at `src/backend.js:177`. So when `detectAll` throws (caught
+   by `catch { rows = [] }`), **every provider is reported available again**:
+
+   ```
+   detectAll failed entirely. /state now reports:
+      claude    available = true | detail = (none)
+      codex     available = true | detail = (none)
+      opencode  available = true | detail = (none)
+      zcode     available = true | detail = (none)
+   ```
+
+   The comment says "Unknown stays unavailable"; the code returns the one value
+   that is *not* unavailable. The fix is one line — treat a missing probe as
+   unknown, never as `info`:
+
+   ```js
+   if (probe === undefined) return { ...info, available: false, detail: 'availability not probed' }
+   ```
+
+3. **Residual cost the TTL does not remove.** The first `/state` after load, and
+   the first after each 30 s TTL expiry, still blocks on sequential `--version`
+   probes with `15000 + 20000 + 15000` ms of headroom. On a host with one hung
+   CLI that is still a 50-second spinner. Cheaper: probe lazily *after*
+   responding (return cached-or-unknown immediately, kick the probe, let the
+   next poll pick it up), which makes the worst case invisible to the user
+   instead of bounded-but-huge.
 
 ---
 
 ## Part 3 — Verdict table
 
+Status column: **LIVE** = still true at `b5693d8`; **FIXED** = the claim was
+true at `2d68e3f` but commit `2f6660e`/`b5693d8` closed it.
+
 ### Claims
 
-| # | Claim | Verdict | Severity after my pass | One-line reason |
-| --- | --- | --- | --- | --- |
-| D | resume rejected only after a billed child | **CONFIRMED** (worse) | **medium** | No resume field exists in `SubagentStartRequest`, so no provider can pre-validate; the `await` at `src/backend.js:232` completes a real spawn + handshake + teardown before the guard at `:248`. Cost is real, but the blast radius is one wasted dispatch per mistaken call. |
-| E | already-aborted signal still executes dispatch | **OVERSTATED** | **low** (was high) | `dsh-tools/lib/index.js:3390-3400` returns `ABORTED_BEFORE_DISPATCH` before the body runs, so the common path never spawns. Only a mid-window kill inside a job or a roundtable fan-out survives. |
-| F | agent_dispatch duplicates the official tool, opposite semantics | **OVERSTATED** | **low** (was medium/high) | The official bundles are **not installed** (`dsh-subagent-codex` / `-claude-code` absent; only in the source checkout at `0.2.1-alpha.2`), and when present the tool names differ so both register cleanly. "Opposite" is wrong — they are *different delivery models*. |
-| G | roundtable bypasses maxConcurrent | **CONFIRMED** | **medium** (was high) | Measured peak concurrency = member count (8/8). No gate exists on that path at all, so nothing is being "bypassed" — but the fan-out is provider-count-bounded and `rounds` clamps to 3. |
+| # | Claim | Verdict | Status | Severity | Reason |
+| --- | --- | --- | --- | --- | --- |
+| D | resume rejected only after a billed child | **CONFIRMED** (was) | **FIXED** (`src/backend.js:232`) | was medium → now low | No resume field exists in `SubagentStartRequest`, so no provider could pre-validate. Guard now runs first — verified: `startActivation was called: 0`. |
+| E | already-aborted signal still executes dispatch | **OVERSTATED** | **FIXED** (`src/tools.js:58-60`) | was high → now **low, new form** | The registry already returned `ABORTED_BEFORE_DISPATCH` before the body (`dsh-tools/lib/index.js:3390-3400`); the prior reproduction bypassed it by testing the semaphore alone. The landed fix rejects with a bare `Error`, losing abort identity — a new low-severity issue. |
+| F | agent_dispatch duplicates the official tool, opposite semantics | **OVERSTATED** | **LIVE (by design)** | low | `dsh-subagent-codex` / `-claude-code` are **not installed** (only in the source checkout at `0.2.1-alpha.2`); tool names differ so both register cleanly. "Opposite" is wrong — different *delivery models*, not opposite semantics. |
+| G | roundtable bypasses maxConcurrent | **CONFIRMED** | **LIVE** | medium | Measured peak concurrency = member count (8/8). No gate exists on that path at all, so nothing is "bypassed"; the fan-out is provider-count-bounded and `rounds` clamps to 3. |
 
 ### Proposed patches
 
-| # | Patch | Introduces a new defect? | Severity of the new defect | Single most important consequence |
+| # | Patch | New defect? | Status | Severity of the new defect |
 | --- | --- | --- | --- | --- |
-| P1 | `try/catch` around `jobs.start` → `undefined` | **YES** | **high** | It also swallows the per-owner *concurrency cap*, turning a capped dispatch into an inline call that can block the tool/HTTP request for up to 20 minutes with no `jobId` to cancel. |
-| P2 | hoist `resumeSessionId` guard above `startActivation` | **no** | — | Recommended. Must be placed *below* the `route === undefined` check or it degrades a stale-provider diagnosis. |
-| P3 | reorder round-2 prompt so `basePrompt` comes first | **no functional defect** | low (test coverage) | Nothing parses `【第N轮辩论】` and both existing assertions are presence-based, so it passes CI — but it only helps prefix caching for rounds ≥ 2 and only if the external provider itself caches by prompt prefix. |
-| P4 | filter members through `enabled` + `detectAll()` | **YES** | **high** | `detectAll` spawns up to 4 sequential `--version` probes (15 s + 20 s + 15 s timeouts) and the panel hits `/state` four times per tab sweep — up to **200 s** of blocked requests, to fix a display bug `availability` could fix for free. |
+| P1 | `try/catch` around `jobs.start` → `undefined` | **YES** | **LANDED AS-IS** (`2f6660e`) — the naive form | **high** |
+| P2 | hoist resume guard above `startActivation` | ordering flaw only | **LANDED, with the flaw** | low |
+| P3 | reorder round-2 prompt (`basePrompt` first) | none functional | not applied | low (missing test guard) |
+| P4 | filter members via `enabled` + `detectAll()` | **partly solved, one new bug** | **in-flight in the working tree** | medium |
 
 ### The single most dangerous side effect
 
-**P1's catch is not selective, and the registry gives it no way to be.** All
-four `LocalJobRegistry.start` preflight failures (`dsh-jobs-local/lib/index.js:413-419`)
-are plain `Error`s with no `code` and no `name`:
+**P1's catch is not selective, and the registry gives it no way to be — and the
+patch has already shipped in that form.**
+
+All four `LocalJobRegistry.start` preflight failures
+(`dsh-jobs-local/lib/index.js:413-419`) are plain `Error`s with no `code` and no
+`name`:
 
 ```
 background job limit reached for this owner (limit: 1); use job_kill to …
@@ -572,29 +737,67 @@ background jobs unavailable: no job controller serves this agent (load …)
 ```
 
 The first is a **capacity** signal the caller must obey; the second is a
-**composition** signal that legitimately means "run inline". A bare
-`catch { return undefined }` cannot tell them apart, so it silently converts
-backpressure into an unbounded foreground stall — and in the panel it does so
-while the tab is spinning with its Cancel button hidden, because
-`client.js:965` awaits the response and the cancel affordance is gated on a
-`jobId` the inline path never produces. That is a regression from *"the model
-gets a retryable error"* to *"the user's UI freezes for up to 20 minutes"*.
+**composition** signal that legitimately means "run inline". The shipped
+`startJob` (`src/tools.js:130-141`) and the panel route
+(`src/http.js:449-463`) catch both. Verified against the shipped function with a
+real registry at `maxConcurrentJobsPerOwner: 2`:
 
-The correct patch needs either a prose match (ugly but workable, shown in P1)
-or, better, an upstream change so `jobs.start` throws distinguishable
-`HarnessError` codes.
+```
+job 1 (cap=2): agent-alliance-44eee8580ee84e58
+job 2 (cap=2): agent-alliance-6b13412573d84b68
+job 3 (cap=2): undefined <-- returned undefined => CALLER RUNS INLINE
+```
+
+Three consequences, in order of severity:
+
+1. **Backpressure becomes an unbounded foreground stall.** The 3rd dispatch
+   does not fail — it runs inline under the foreground budget
+   `Math.min(args.timeoutMs || defaultTimeout, defaultTimeout * 4)`
+   (`src/tools.js:238`) = up to **20 minutes**, with no `jobId` to poll or kill.
+2. **The panel freezes with its Cancel button hidden.** `client.js:958-973`
+   awaits `/roundtable` and clears `busy` only in `finally`; the cancel
+   affordance is gated on `jobId !== ''`, which the inline path never sets.
+3. **The diagnostic the patch added never fires.** Both call sites look up the
+   logger with `ctx.get('logger')` / `ctx?.get?.('logger')`, but `logger` is a
+   Cordis **built-in accessor**, not a registered service: `ctx.get('logger')`
+   returns `undefined` while `ctx.logger.warn` is a function (verified). The
+   `serviceOf` fallback then throws `cannot get property "logger" without
+   inject`, which its own `catch` swallows — so the `background job unavailable,
+   running inline:` line is never emitted. My probe reproduced exactly this: no
+   warning appeared.
+
+### The cheapest real improvement (free, no new risk)
+
+Not one of the four proposed patches: **stop asserting `available: true` for a
+backend nobody probed** (`src/backend.js:177,211,359,370`). Today `/state`
+reports four healthy providers on a host where `detectAll` shows **all four
+`available: false`**. Reporting `available: undefined` + `detail: 'not probed'`
+and letting the UI render a third state costs two lines, no subprocess, and no
+timeout exposure — it fixes the lie P4 was invented to fix, without P4's
+50-second worst case.
 
 ### Notes on my own confidence
 
-- **D and G are the two CONFIRMED verdicts.** D rests on reading the whole
+- **D and G were the two CONFIRMED verdicts.** D rests on reading the whole
   `startActivation → startExternal → materializeTracked → provider.start` chain
-  in the installed lib plus the Codex source's `spec.spawn(...)` before return.
-  G rests on a direct measurement (peak concurrency 8 for 8 members).
-- **E's downgrade rests on one empirical run** against a real `ToolRuntime`.
-  It is the strongest single piece of new evidence in this report, and it
-  contradicts the prior audit's reproduction method (which tested the semaphore
-  in isolation rather than through the registry).
-- **F's downgrade rests on the installed tree lacking the official bundles.**
-  If a future rc ships them by default, F's severity rises back to medium.
-- **P2 is the only patch I recommend adopting unchanged.** Everything else in
-  Part 2 needs the corrected form given in its section.
+  in the installed lib plus Codex's `spec.spawn(...)`-before-return. G rests on
+  a direct measurement (peak 8 for 8 members). D's defect was then fixed
+  independently while I audited, which strengthens rather than weakens the
+  verdict.
+- **E's downgrade rests on one empirical run** against a real `ToolRuntime`. It
+  is the strongest piece of new evidence here, and it contradicts the prior
+  audit's method (semaphore in isolation rather than through the registry).
+- **F's downgrade rests on the installed tree lacking the official bundles.** If
+  a future rc ships them by default, F returns to medium.
+- **The genuinely new findings in this report are all consequences of the
+  fixes, not of the original code:** P1's swallowed capacity signal (**high**,
+  landed `2f6660e`), P2's stale-route misdiagnosis (**low**, landed `2f6660e`),
+  and the in-flight P4's fail-open branch that re-asserts `available: true`
+  whenever the probe fails (**medium**, uncommitted working tree). None of the
+  three existed at the audit's starting commit.
+- **Method note, in fairness to the prior reports.** Two of the four claims I
+  was asked to refute were closed by a fix commit that landed *during* this
+  audit. I kept the as-of-`2d68e3f` analysis and marked it FIXED rather than
+  deleting it, because a reader needs to know which findings are still
+  actionable. Everything marked LIVE in the tables above was re-executed
+  against `b5693d8` after the fixes landed.

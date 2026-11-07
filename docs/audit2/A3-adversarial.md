@@ -310,3 +310,302 @@ throws nothing and returns a *reason string* ("未配置 commandTemplate") witho
 correctly by luck — but the patch must not conflate the three states "not installed", "installed and broken",
 "not configured". The panel needs the `detail` string to distinguish them, and the report's own suggestion
 (`detail: stateOf(providerId)?.detail`) only works if `detail` is preserved for every branch.
+
+---
+
+## FIX 3 — `resumeSessionId` guard before `startActivation` (committed)
+
+**Patch as written** (`src/backend.js:228-232`):
+
+```js
+const signal = request.signal ?? new AbortController().signal
+if (hasResumeId(request.resumeSessionId)) throw resumeRejection(providerId, providerName)
+const route = subagentRoute(ctx, config, providerId, parent)
+```
+
+This one is **correct and well-placed**. It runs before `subagentRoute()` (pure registry reads) and before
+`startActivation()`, so nothing is spawned. The committed test correctly flips from
+`assert.equal(calls.dispose, 1)` to `calls.start.length === 0` / `calls.dispose === 0`.
+
+### R3.1 — the removal of `activation.result.catch(() => {})` re-opens an unhandled-rejection window
+
+The patch deleted the no-op consumer together with the guard it was protecting:
+
+```diff
+       let primary
+       try {
+-        // 先挂上 no-op rejection 消费者：resumeSessionId 分支会丢弃 result…
+-        activation.result.catch(() => {})
+         const result = await activation.result
+```
+
+That `.catch()` was doing **two** jobs. The comment names only the resume one, but the line also guarded a real
+race: `startActivation()` resolves when the child is *published*, while `activation.result` may already be
+settling. If the caller's `signal` aborts between publication and the `await` on the next line, the rejection can
+land before anyone has attached a handler, and Node reports an unhandled rejection. The plugin's own contract in
+`dsh-subagent/lib/types/types.d.ts:46-49` says capture failures **reject** `result`, so this path is reachable.
+
+Removing it is *probably* fine in practice because the `await` is on the very next statement, but the audit did not
+prove that, and the new test does not cover it — it only covers the pre-start rejection.
+
+**BAD vs CORRECT**
+
+```js
+// BAD (as committed): the only handler is attached one microtask later
+const activation = await route.service.startActivation({...})
+let primary
+try {
+  const result = await activation.result
+
+// CORRECT: keep one no-op consumer attached before any await can interleave
+const activation = await route.service.startActivation({...})
+let primary
+try {
+  void activation.result.catch(() => {})   // contention guard, independent of the resume branch
+  const result = await activation.result
+```
+
+### R3.2 — the guard's error message still routes the user to a path that may not exist
+
+`resumeRejection()` (`src/backend.js:152-157`) says:
+
+> "…use the CLI provider for external-session resume"
+
+On this machine all four CLI providers are unavailable (`detectAll()` → all `available=false`), and the plugin
+never checks availability before making that recommendation. The user is told to use a path that cannot run.
+That is not caused by the patch — the patch only made the message *more* promptly reachable, which raises its
+prominence.
+
+**Corrected wording**:
+
+> `resumeSessionId is not supported on the official subagent path for provider "…" (the official provider is
+> one-shot). Continue the session with the CLI wrapper instead — if its CLI is not installed, run the task in a
+> new session, or use agent_import to bring the old transcript into DSH.`
+
+### R3.3 — edge case: `resumeSessionId: 0` and `resumeSessionId: " "`
+
+`hasResumeId` (`src/backend.js:148-150`) is `value !== undefined && value !== null && value !== ''`. So `0`
+counts as a resume id and is rejected, and `"   "` (whitespace) also counts. Neither can be a real session id.
+The schema declares the parameter as `{type:'string'}`, so `0` is a type violation the raw-schema tool path does
+not validate. Minor, but a `' '` resume that reaches the CLI provider passes `--resume ' '` to the binary.
+
+```js
+// CORRECT
+function hasResumeId(value) {
+  return typeof value === 'string' ? value.trim() !== '' : value !== undefined && value !== null
+}
+```
+
+### R3.4 — the fix's real payoff depends on which path the caller reaches
+
+The guard only fires on the **subagent** path. A caller who supplies `resumeSessionId` *and* has no live parent
+Agent — every panel request (`src/http.js:274-276`) and any headless tool call without `exec.agent` — never
+reaches `subagentBackend` at all; it goes straight to `cliBackend`. So the saved cost applies to exactly one
+scenario: an interactive model session with the official bundle installed, asking to resume. That is the scenario
+the audit measured, so the fix is worth keeping — but the commit message's "a rejected resume still paid for a
+child process" is accurate only for that scenario, not universally.
+
+**Test that catches R3.1**
+
+```js
+test('an activation that rejects before the caller awaits does not become an unhandled rejection', async () => {
+  const rejections = []
+  process.on('unhandledRejection', (e) => rejections.push(e))
+  // fakeSubagents whose startActivation resolves with an already-rejecting result
+  const resolver = /* ... */
+  await assert.rejects(() => resolver.resolve({ provider: 'codex', parent }).dispatch({ prompt: 'x' }), /boom/)
+  await new Promise((r) => setTimeout(r, 20))   // let the microtask queue drain
+  process.off('unhandledRejection', () => {})
+  assert.deepEqual(rejections, [])
+})
+```
+
+---
+
+## FIX 4 — reject a pre-aborted signal (committed)
+
+**Patch as written** (`src/tools.js:50-56`):
+
+```js
+run(signal, fn) {
+  if (signal?.aborted === true) {
+    return Promise.reject(new Error('aborted before start (maxConcurrent=' + limit + ')'))
+  }
+  return new Promise((resolveRun, rejectRun) => { … })
+```
+
+Placement is correct: the check is **before** `active += 1` and before the `new Promise`, so no slot is taken and
+no handler is needed. This is the right shape. The analysis below is about what a plausible *refactor* of it
+would break, plus the question you asked about `exec.signal` scope.
+
+### R4.1 — the answer to "can `exec.signal` carry an unrelated abort?": **yes, by design**
+
+`exec.signal` is **not** per-call. `packages/core/agent-loop/src/tool-calls.ts:65-79` builds every planned call of
+a step from one `signal`:
+
+```js
+export async function executeToolCalls(ctx, turn, step, toolCalls, signal, acceptContext) {
+  …
+  // Inputs are distinct because tools/execute wrappers may replace `exec.signal`.
+  const planned = toolCalls.map(block => ({
+    block,
+    exec: { callId: block.id, name: block.name, arguments: parseArguments(block.arguments), agent, signal },
+  }))
+```
+
+One abort therefore cancels **the whole step**: "stop this turn" (user pressed Esc, goal round ended, turn
+deadline hit) aborts the step signal, which every call in the step shares. That is the intended contract, not a
+bug — but it means the patch's semantics are "if the *step* is already cancelled, do not start" rather than "if
+*this* call is cancelled, do not start". For `agent_dispatch` that is exactly right: a cancelled step must not
+spend quota.
+
+The important consequence is the reverse one — **a signal that aborted for an unrelated reason can reject a call
+that the registry would otherwise have dispatched**. The registry already has a canonical gate for this,
+`callerCancelled(exec)` at `packages/core/tools/src/index.ts:1506`:
+
+```ts
+if (this.callerCancelled(exec)) {
+  return next({ kind: 'final-result', exec, result: toolAbortedBeforeDispatchResult() })
+}
+```
+
+with `callerCancelled` reading `state.callerSignal.aborted` (`index.ts:1548-1553`). So for the ordinary
+"cancelled before dispatch" case, **the framework already stops the call before `execute()` runs**, and the
+plugin's new check is a second, redundant guard for the *same* non-event.
+
+Where the plugin's check is **not** redundant — and where it earns its place — is the window the framework cannot
+see: `tools/execute` wrappers may *replace* `exec.signal` with a tighter one after the pre-dispatch check.
+`packages/guard/timeout-policy/src/index.ts:62-66` does exactly that:
+
+```ts
+using d = deadline(exec.signal, timeoutMs, TOOL_TIMEOUT)
+const upstream = exec.signal
+exec.signal = d.signal
+```
+
+So the signal the plugin sees can be a **derived deadline** that is already aborted when `execute()` begins, even
+though `callerCancelled` said no. The plugin's guard catches that. Net: keep the patch; it is a genuine
+belt-and-braces against the deadline wrapper, not a duplicate of `callerCancelled`.
+
+What it must **not** become is `signal.throwIfAborted()` sprinkled inside `begin()` or before every `await` in
+`dispatch()` — see R4.2.
+
+### R4.2 — the refactor trap: moving the check into `begin()` leaks the slot permanently
+
+The natural "cleaner" version — replace the boolean with `throwIfAborted()` and put it where the work starts —
+wedges the gate forever. Verified (`/tmp/slot-leak2.mjs`):
+
+```
+$ node slot-leak2.mjs
+rejected: AbortError
+active after aborted fast-path = 1  (must be 0)
+next call: TIMEOUT | ran = false
+PERMANENT SLOT LEAK confirmed
+```
+
+because `active += 1` has already run and the `.finally()` that would decrement it is attached only to the
+*future* chain that the throw skipped.
+
+**BAD vs CORRECT**
+
+```js
+// BAD: throw after taking the slot, before the settle chain exists
+if (active < limit) { active += 1; entry.begin(); return }
+// ...inside begin():
+signal?.throwIfAborted()                 // ← leaks `active` on throw
+
+// CORRECT (what is committed): reject before taking the slot
+run(signal, fn) {
+  if (signal?.aborted === true) return Promise.reject(new Error('aborted before start (…')) 
+  return new Promise(…)
+}
+
+// ALSO CORRECT, if the check must live in begin(): decrement before rethrowing
+begin() {
+  if (started) return
+  started = true
+  if (signal?.aborted === true) {
+    active -= 1                            // release the slot we just took
+    if (queue.length > 0) queue.shift().begin()
+    rejectRun(new Error('aborted before start (…'))
+    return
+  }
+  …
+}
+```
+
+### R4.3 — the error shape differs from the framework's canonical abort result
+
+The patch rejects with a plain `Error`. The framework's canonical pre-dispatch abort is
+`toolAbortedBeforeDispatchResult()` (`index.ts:1978-1989`):
+
+```ts
+{ content: [{ type: 'text', text: 'Error: tool call aborted before dispatch' }],
+  isError: true,
+  error: { message: 'tool call aborted before dispatch',
+           info: { name: 'AbortError', code: TOOL_ABORTED_BEFORE_DISPATCH } } }
+```
+
+A plain throw reaches the model as a generic tool error with no `AbortError` classification, so an ordinary user
+cancellation is reported to the model — and to any `tools/result` observer or transcript analysis — as a failure
+rather than a cancellation. It also makes `agent_dispatch` look broken in transcripts where the user simply
+pressed Esc.
+
+**Corrected code**:
+
+```js
+if (signal?.aborted === true) {
+  const error = new Error('tool call aborted before dispatch')
+  error.name = 'AbortError'
+  error.code = 'TOOL_ABORTED_BEFORE_DISPATCH'
+  return Promise.reject(error)
+}
+```
+
+This is a small change with a disproportionate effect on transcript honesty: it lets the model distinguish "I
+cancelled it" from "the tool failed".
+
+### R4.4 — the committed regression test asserts on the wrong surface
+
+`tests/tools.test.js` adds:
+
+```js
+await assert.rejects(
+  () => dispatch.execute({ provider: 'p1', prompt: 'x' }, { signal: controller.signal, agent: undefined }),
+  (error) => { assert.match(String(error.message), /abort/i); return true },
+)
+```
+
+It calls `execute()` **directly**, bypassing the registry. So it proves the semaphore rejects, but not that a real
+tool call through `ToolRuntime` produces a cancellation. And because the test never goes through
+`registerTools`' disposal path, it would still pass if the patch broke the gate for subsequent calls (R4.2): a
+single aborted call cannot detect a leaked slot.
+
+**Test that catches R4.2 and R4.4**
+
+```js
+test('an aborted call does not consume a concurrency slot', async () => {
+  const { ctx, registered } = mockCtx()
+  const { registry, resolver } = wire([slowProvider()])
+  registerTools(ctx, { registry, resolver, config: makeConfig({ maxConcurrent: 1 }) })
+  const tool = registered.find(t => t.name === 'agent_dispatch')
+
+  const aborted = new AbortController(); aborted.abort()
+  await assert.rejects(() => tool.execute({ provider: 'slow', prompt: 'x' }, { signal: aborted.signal }), /abort/i)
+
+  // The gate must still have its single slot free.
+  const value = await Promise.race([
+    tool.execute({ provider: 'slow', prompt: 'y' }, { signal: new AbortController().signal }),
+    new Promise((_, rej) => setTimeout(() => rej(new Error('gate wedged: slot leaked')), 1000)),
+  ])
+  assert.match(value.text, /done/)
+})
+```
+
+### R4.5 — edge case: `signal` may be `undefined` on the fake-context path
+
+Every committed test passes `{ signal }`, but `execute(args, exec)` is called with `{}` by several existing tests
+(`'unknown provider rejects…'`, `'background dispatch without an agent…'`). `run()` handles that
+(`signal?.aborted`), and `dispatchForeground` passes `signal` straight through to `gate.run(signal, …)`, so
+`undefined` never becomes `"undefined"`. Confirmed clean — but the optional-chaining is load-bearing and should
+stay even if the JSDoc is tightened to require a signal.

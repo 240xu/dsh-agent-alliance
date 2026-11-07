@@ -332,3 +332,207 @@ no-op (`killJob` returns early for any non-terminal status only after re-invokin
 `job <id> is still stopping; kill it and wait for settlement before removing it`.
 The record is therefore unreachable for cleanup and permanently occupies one slot of
 `maxConcurrentJobsPerOwner`.
+
+### F5 (low) — an in-flight HTTP dispatch is not cancelled by plugin disposal; it keeps running and answers normally
+
+Disposal removes the route (`webServer.register`'s disposer) but nothing owns the
+already-running handler. In `src/http.js:384-388` the handler creates a bare
+`new AbortController().signal` and discards the controller:
+
+```js
+const result = await backend.dispatch({
+  ...
+  signal: new AbortController().signal,   // no handle on the controller; never aborted
+})
+```
+
+**Reproduction:**
+
+```bash
+cd /tmp/b2 && timeout 60 node repro3-inflight.mjs
+```
+
+```
+routes: ["/__agent-alliance"]
+probe route registered: ["/__agent-alliance"]
+dispatch started: true | response ended yet: false
+route disposed after 0 ms | routes now: []
+backend signal aborted by disposal? false
+handler settled after 1402 ms | status: 200 | body: {"ok":true,"provider":"slow","backend":"cli","text":"late answer","stopReason":null,"externalSessionId":null,"durationMs":1502}
+VERDICT: disposal DID NOT cancel the in-flight dispatch; handler completed normally
+```
+
+The same holds when the *plugin fiber* (not the route disposer) is disposed while the
+handler is mid-flight — the handler finished with `status=200` 800 ms after disposal:
+
+```bash
+cd /tmp/b2 && timeout 60 node repro3b-stale.mjs
+```
+
+```
+plugin fiber disposed while the request is in flight
+in-flight handler finished AFTER disposal: status=200 body={"ok":true,"provider":"slow","backend":"cli","text":"late answer",...}
+stale ctx.get("jobs") -> undefined
+```
+
+**Assessment — why this is only *low*:** the handler does not touch a dead context in a
+way that throws. `ctx.get('jobs')` returns `undefined` after disposal and every optional
+service read already tolerates that, so the response is well-formed. The leak is the
+external subprocess the backend owns for the remainder of its timeout; on the CLI path
+`spawnCli` enforces `timeoutMs`, so it is bounded (default 300 s, up to 4× that for
+`agent_dispatch`). It also does not resurrect a registration: the route is gone from the
+server and the tool list is empty.
+
+**Residual risk (theoretical, not reproduced):** a disposal that races the plugin's own
+*reload* can leave the old fiber's dispatch writing to the ledger (`saveLedger`) or
+calling `importOne` after the new fiber already imported the same external id. The
+ledger write is atomic and idempotent by key, so the outcome is a benign duplicate
+`already-imported`, not corruption. I could not make the two overlap in a way that
+produces a visible defect.
+
+**Fix (optional):** hold the controller and abort it from the route's effect disposer:
+
+```js
+const inflight = new Set()
+const route = async (req, res) => { const ac = new AbortController(); inflight.add(ac); try { … } finally { inflight.delete(ac) } }
+return () => { webServerDisposer(); for (const ac of inflight) ac.abort(new Error('plugin disposed')) }
+```
+
+### F6 — `recent` dispatch ring: **CLEAN** (bounded, no finding)
+
+`src/http.js:266` keeps `recent = []`, and `remember()` (`http.js:292-296`) trims it:
+
+```js
+recent.push(entry)
+if (recent.length > 50) recent.splice(0, recent.length - 50)
+```
+
+Both bounds hold under load: the array is capped at 50 entries, `/state` serves the last
+20, and each stored entry is truncated to 80 prompt characters plus scalar fields.
+
+```bash
+cd /tmp/b2 && timeout 120 node repro6-recent.mjs
+```
+
+```
+recentDispatches before: 0
+recentDispatches after 120 dispatches: 20
+per-entry JSON bytes (served): [144,144,144,...20 x 144]
+largest served entry: 144 bytes
+```
+
+120 dispatches with a 200 000-character prompt produced 20 served entries of 144 bytes
+each — the prompt is `slice(0, 80)` and failures store `error.slice(0, 200)`. Worst case
+retention is 50 × ~300 B ≈ 15 KB per registration, and it is released with the fiber.
+No `Map`/`Set` that grows on request or dispatch exists anywhere in `src/`
+(`grep -rn "new Map()\|new Set()" src/*.js src/provider/*.js` finds only per-call locals
+in `backend.js:297`, `provider/claude.js:175`, `provider/types.js:18`). The roundtable
+`batches` map named in the task no longer exists — `grep -rn batches src/ client.js`
+returns nothing.
+
+### F7 (low) — panel jobs are unowned and survive plugin disposal; reload can exhaust the shared job bucket and the panel then blocks
+
+By design the panel starts **unowned** jobs (`ctx.jobs.start({ kind, label, run })` with
+no `owner`, `src/http.js:430-448`). Unowned jobs are not tied to a session, so *nothing
+stops them when the plugin fiber is disposed* — not the route disposer, not a session
+teardown. In a long-lived host (or during an HMR loop) each reload can add another
+running job to the one shared "unowned" bucket, whose cap defaults to 10.
+
+**Reproduction** (cap lowered to 3 so the ceiling is reached in four reloads):
+
+```bash
+cd /tmp/b2 && timeout 90 node repro9-job-across-reload.mjs
+```
+
+```
+cycle 1 -> {"ok":true,"jobId":"agent-alliance-1d45910f66c94cef"}
+cycle 2 -> {"ok":true,"jobId":"agent-alliance-1c73e7870ad1436f"}
+cycle 3 -> {"ok":true,"jobId":"agent-alliance-7f93000d1fec4969"}
+cycle 4 -> {"ok":true,"jobId":null,"text":"参与 1 家 / 成功 1 家\n圆桌问题: job 4\n\n[slow] (4000ms)\ndone\n"}
+job records still live after 4 reloads: completed,completed,completed
+```
+
+The first three jobs keep running through the "reload"; the fourth `jobs.start` is
+refused by the limit, `src/http.js:449-457` catches the refusal and **runs the
+roundtable inline**, so the POST blocks for the full multi-agent run (4000 ms here)
+instead of returning a job id.
+
+**Why this matters for the panel specifically:** `client.js:969` treats `jobId: null`
+as "no job" and stores the returned `text` inline, so the user does see the answer —
+after an unexplained stall with no progress row, and with no cancel affordance
+(`cancelJob` returns immediately when `jobId === ''`, `client.js:979`). The UI's
+job-status polling (`useJobOutput`) never runs for that request.
+
+**Interaction with F4:** these are the same swallow-the-refusal path
+(`startJob`/`jobs.start` catch → inline fallback). F4 shows it turning a cancelled job
+into a permanent slot leak; F7 shows it turning the ordinary cap into a silent block.
+The cap itself is also reachable *without* any bug — a user who starts 10 panel
+roundtables quickly hits it — so the fallback should not be silent either way.
+
+**Fix.** Two independent halves:
+
+- Give panel jobs a lifetime bound to the fiber that started them, so a reload cancels
+  them rather than orphaning them:
+  ```js
+  const controllers = new Set()
+  ctx.effect(() => {
+    for (const spec of specs) controllers.add(spec.controller)
+    return () => { for (const ac of controllers) ac.abort(new Error('plugin disposed')) }
+  }, 'agent-alliance: panel jobs')
+  ```
+- Make the refusal visible instead of silently switching execution mode: return
+  `{ ok: false, code: 'jobs-busy', error }` (HTTP 429) when the caller asked for a job
+  and `jobs.start` refused because the bucket is full, and keep the inline fallback only
+  for the "no jobs service mounted at all" case. The panel then shows a retryable error
+  row instead of a stalled request.
+
+---
+
+## Consolidated reproduction
+
+Every headline claim above runs from one command against the shipped modules:
+
+```bash
+cd /tmp/b2 && timeout 120 node repro10-summary.mjs
+```
+
+```
+PASS 3x mount/dispose/remount — tools 6→0, routes 1→0 each cycle, no duplicate error
+PASS failed start rolls back — leaked registrations: []
+PASS sqlite handle leak — 20 descriptors leaked by 20 read-only listSessions calls (expected 0)
+PASS hung job pins slot; next bg call degrades inline — status=stopping, second call returned a jobId=no (blocked inline)
+
+SUMMARY: 4 clean, 0 defective
+```
+
+(The `PASS`/`FAIL` column asserts the *observed* behaviour, not the desired one: the
+SQLite and job lines pass because the defect reproduced. Only the first two lines are
+clean verdicts.)
+
+## Verdict table
+
+| # | Area | Verdict | Severity | Evidence |
+|---|---|---|---|---|
+| F1 | `ctx.effect` ownership, 3× mount/dispose/remount | **CLEAN** | — | `repro1-remount.mjs` |
+| F2 | HMR-shaped reload; failed mid-registration start | **CLEAN** | — | `repro2-hmr.mjs`, `repro2b-partial.mjs` |
+| F3 | SQLite handle lifetime (`opencode.js:62`, `zcode.js:64`) | **CONFIRMED LEAK** | **high** | `repro4b-fd.mjs`, `repro4-sqlite.mjs`, `repro4e-emfile.mjs` |
+| F4 | Job `done` never settles → slot pinned forever; refusal swallowed into a blocking inline call | **CONFIRMED** | **medium** | `repro5-degrade.mjs`, `repro5d-hang.mjs` |
+| F5 | In-flight HTTP dispatch not aborted by disposal | **CONFIRMED** (impact low) | low | `repro3-inflight.mjs`, `repro3b-stale.mjs` |
+| F6 | `recent` ring and other module state | **CLEAN** | — | `repro6-recent.mjs` |
+| F7 | Unowned panel jobs survive disposal; reload exhausts the bucket and the POST stalls | **CONFIRMED** | low | `repro8-job-reload.mjs`, `repro9-job-across-reload.mjs` |
+| — | Late/removed `webServer` service | **CLEAN** | — | `repro7-http-dispose.mjs` |
+| — | Roundtable `batches` map | **absent** (already removed) | — | `grep -rn batches src/ client.js` → no match |
+
+## Answer to the three questions asked
+
+1. **Is 3× remount/dispose clean?** Yes. Six mount cycles (three in the counting loop,
+   one after it, plus two more in the service-lifecycle probe) each produced exactly
+   6 tools and 1 route, and each dispose returned the registry to 0/0 with no
+   duplicate-registration error. A start that fails mid-way is rolled back completely.
+2. **SQLite handle verdict?** **Leaking.** One descriptor per `listSessions`,
+   `readSession`, and `exportSession` call in both `opencode.js` and `zcode.js`;
+   `db()` opens a `DatabaseSync` that is never closed on success *or* error. 100 listing
+   calls leaked 101 descriptors; under `ulimit -n 128` the provider died after 108 calls
+   with `unable to open database file`. Only GC reclaims them, so the ceiling is
+   nondeterministic. Fix: scope each handle to the call and `close()` in `finally`.
+3. **Report path:** `docs/audit2/B2-bughunt.md`.

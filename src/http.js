@@ -326,10 +326,46 @@ export function registerHttp(webServer, { ctx, io, resolver, registry, config, h
    */
   const routes = new Map()
 
-  routes.set('/state', route(['GET'], async () => ({
-    providers: resolver.list(undefined),
-    recentDispatches: recent.slice(-20),
-  })))
+  // Availability is probed, not assumed. `resolver.list()` only knows whether a
+  // provider is configured; the panel used to show every configured provider as
+  // usable even when none of the CLIs existed. Probing spawns `--version` per
+  // provider, so results are cached for a short window: the panel polls this
+  // route and must not fork a subprocess storm.
+  const DETECT_TTL_MS = 30_000
+  let detectCache = { at: 0, rows: [] }
+  /**
+   * Probe provider availability, memoised for {@link DETECT_TTL_MS}.
+   * @param {boolean} [force] bypass the cache after a user-visible failure
+   * @returns {Promise<Array<{id: string, available: boolean, detail?: string}>>} probe rows
+   */
+  async function detectRows(force = false) {
+    const now = Date.now()
+    if (!force && now - detectCache.at < DETECT_TTL_MS && detectCache.rows.length > 0) return detectCache.rows
+    let rows = []
+    try {
+      rows = typeof registry?.detectAll === 'function' ? await registry.detectAll() : []
+    } catch {
+      rows = []
+    }
+    detectCache = { at: Date.now(), rows }
+    return rows
+  }
+
+  routes.set('/state', route(['GET'], async () => {
+    const probed = await detectRows()
+    const byId = new Map(probed.map((row) => [row.id, row]))
+    const providers = resolver.list(undefined).map((info) => {
+      const probe = byId.get(info.id)
+      if (probe === undefined) return info
+      return {
+        ...info,
+        // Unknown stays unavailable rather than pretending the provider works.
+        available: probe.available === true,
+        ...(typeof probe.detail === 'string' && probe.detail !== '' ? { detail: probe.detail } : {}),
+      }
+    })
+    return { providers, recentDispatches: recent.slice(-20) }
+  }))
 
   routes.set('/sessions', route(['GET'], async (req) => {
     const url = requestUrl(req)
