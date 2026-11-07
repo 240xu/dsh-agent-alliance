@@ -631,3 +631,23 @@ test('GET /state reports probed availability, not a configured-provider assumpti
   assert.equal(p2.available, false)
   assert.match(String(p2.detail), /not found/)
 })
+
+test('GET /state fails closed when the probe itself fails', async () => {
+  const { webServer, routes } = mockWebServer()
+  const resolver = {
+    list: () => [{ id: 'p1', label: 'P1', kind: 'cli', available: true }],
+    resolve: () => ({ id: 'p1', kind: 'cli', available: true, dispatch: async () => ({ text: 'x' }) }),
+  }
+  const failingRegistry = {
+    list: () => [{ id: 'p1', label: 'P1' }],
+    get: () => undefined,
+    detectAll: async () => { throw new Error('probe exploded') },
+  }
+  registerHttp(webServer, options({ resolver, registry: failingRegistry }))
+  const response = await request(routes, 'GET', ROUTE_PREFIX + '/state')
+  assert.equal(response.status, 200)
+  const p1 = response.json.providers.find((p) => p.id === 'p1')
+  // An unprobed provider must not inherit resolver.list()'s optimistic true.
+  assert.equal(p1.available, false)
+  assert.match(String(p1.detail), /not probed/)
+})

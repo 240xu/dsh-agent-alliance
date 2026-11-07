@@ -489,3 +489,36 @@ test('an already-aborted signal never executes the guarded work', async () => {
     'a cancelled call must reject instead of spending quota',
   )
 })
+
+test('a capacity refusal is not silently converted into inline execution', async () => {
+  const { registerTools } = await import('../src/tools.js')
+  const tools = []
+  const ctx = {
+    tools: { register: (def) => { tools.push(def); return () => {} } },
+    // A jobs service that refuses for capacity, the way dsh-jobs-local does at
+    // its per-owner cap. Falling back to inline here would spend the whole
+    // foreground budget with no job id to cancel.
+    get: (name) => name === 'jobs'
+      ? { start() { throw new Error('background job limit reached for this owner (limit: 4)') } }
+      : undefined,
+    logger: { warn() {} },
+  }
+  registerTools(ctx, {
+    resolver: {
+      resolve: () => ({ id: 'p1', kind: 'cli', available: true, async dispatch() { return { text: 'ran', backend: 'cli' } } }),
+      list: () => [{ id: 'p1', label: 'P1', kind: 'cli', available: true }],
+    },
+    registry: { list: () => [{ id: 'p1', label: 'P1' }], get: () => ({}) },
+    config: { providers: {}, defaults: { timeoutMs: 1000, maxConcurrent: 1, defaultCwd: '' } },
+    home: '/tmp',
+  })
+  const dispatch = tools.find((t) => t.name === 'agent_dispatch')
+  await assert.rejects(
+    () => dispatch.execute({ provider: 'p1', prompt: 'x', background: true }, { signal: new AbortController().signal, agent: { sessionId: 's1' } }),
+    (error) => {
+      assert.match(String(error.message), /limit reached/)
+      return true
+    },
+    'a capacity refusal must surface instead of degrading to inline execution',
+  )
+})

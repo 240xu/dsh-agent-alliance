@@ -233,4 +233,186 @@ vendor 缓存语义，插件侧未测量（也没有 usage 采样，见 `04-orch
 
 ---
 
-<!-- APPEND: N1 -->
+## N1 — 新缺陷（前一轮审计遗漏，比上述三条都严重）
+
+### `exec.agent.sessionId` 不存在 → 所有工具发起的后台 job 退化为「无主 job」
+
+**严重度：critical**（数据可见性 + 生命周期 + 配额三重损坏，且**当前 HEAD 仍未修复**）
+
+#### 缺陷本体
+
+```js
+// src/tools.js:340（agent_dispatch 后台分支）
+owner: exec?.agent?.sessionId,
+// src/tools.js:447（agent_roundtable 后台分支）
+owner: exec?.agent?.sessionId,
+```
+（基线 `e15fcf8` 在 `src/tools.js:315`、`:408`，同样两处。）
+
+DSH 的 `Agent` **没有 `sessionId` 成员**：
+
+| 证据 | 位置 |
+|---|---|
+| `interface Agent { readonly id: SessionId }` —— 全部字段就这一个 | `packages/core/agent/src/types.ts:15-18` |
+| 运行时增补只加了 `options/session/inbox/status/ctx/cancel/whenIdle/runMaintenance/send/...`，**无 `sessionId`** | `packages/core/agent/src/runtime-types.ts:139-183` |
+| 真实实现类的构造字段是 `id`、`options`、`session` | `packages/core/agent-loop/src/agent.ts:122-127` |
+| 全仓 `agent.sessionId` / `agent?.sessionId` —— DSH 自身 **0 处** | `grep -rn` 于 `packages/ apps/` |
+| DSH 官方同类工具用的是 `exec.agent.id` | `packages/shell/tool-bash/src/index.ts:272` `...exec.agent ? { owner: exec.agent.id } : {}`，以及 `:297` `const owner = exec.agent?.id` |
+
+`CreateAgentOptions.sessionId`（`packages/core/agent/src/index.ts:65`）是**创建入参**的字段，
+不是已存在 Agent 上的属性 —— 这正是本 bug 的诱因：字段名存在于同一文件，看着像真的。
+
+#### 实测复现（当前 HEAD `b5693d8` + 本次工作区修改）
+
+```js
+// /tmp/probe_owner.mjs —— 用 DSH 类型允许的最小真实 Agent 形状 { id: 'session-abc' }
+await tool.execute({ provider:'fake', prompt:'p', background:true },
+                   { agent: realShapedAgent, signal })
+// 输出：
+job spec keys: [ 'kind', 'label', 'owner', 'outputLimitBytes', 'run' ]
+spec.owner = undefined
+=> owner is UNDEFINED (job becomes UNOWNED / panel-visible)
+```
+
+`undefined` 被 `jobs.start()` 解释为"无主 job"（`packages/jobs/jobs-local/src/index.ts:207`
+`resolveOwner(undefined) → undefined`）。**该 job 从此不属于发起它的会话。**
+
+#### 三条连锁后果（每条都实测）
+
+**后果 1 — 完成通知永不送达，模型永远不知道后台任务结束了。**
+
+`packages/jobs/tool-jobs/src/index.ts:278`：
+```js
+if (delivered || event.cause === 'teardown' || event.job.owner === undefined) return
+```
+无主 job 在 settle 时**直接 return**，不注入、不唤醒。
+
+这里必须精确：插件自己的描述确实告诉模型去取结果（`src/tools.js:327`
+"collect the result with job_output"），所以模型**不是完全无从下手**。
+真正被破坏的是**框架层面的契约**：`dsh-tool-jobs` 装进 system prompt 的章节明确写着
+（`packages/jobs/tool-jobs/src/index.ts:253`）：
+
+> "Track every background job id you start. **You are notified in-session when a job finishes** —
+> do not busy-poll or sleep on one; ... Before giving a final answer, collect every still-relevant
+> job with `job_output` (set `wait: true` only when you are genuinely blocked on it)"
+
+即模型被**明确要求不要轮询**，并且被承诺"完成时会收到通知"。对无主 job，
+这个承诺是假的：模型若遵守指令就会**无限期等下去**，直到回合被别的原因结束；
+若违反指令去轮询，就回到了该 prompt 想避免的 busy-poll。
+更直接的证据是 `tool-jobs` 自己的注释（同文件 `:264-266`）："An idle owner is woken instead,
+because **an undelivered notice is a completion the model never learns about**" ——
+`owner === undefined` 分支正是它想避免的情况。
+
+**后果 2 — agent 销毁时不取消该 job，进程泄漏。**
+
+`ensureOwnerCleanup` 只对**有 owner** 的 job 生效（`packages/jobs/jobs-local/src/index.ts:217`
+`if (owner !== undefined) this.ensureOwnerCleanup(owner)`；`:614-622` 把清理挂在 `owner.ctx` 的
+effect 上）。无主 job 没有这条 cleanup，**会话结束、agent 销毁、甚至用户关掉 UI 之后，
+外部 CLI 子进程仍在跑**，继续烧配额。这正是 `jobs-local` README 承诺要避免的情形。
+
+**后果 3 — 面板 `/tasks` 暴露别人的 job，且配额是全局共享的。**
+
+`assertAccess`（同文件 `:406-410`）只拦**有 owner** 的 job（`job.owner !== undefined && ...`）。
+无主 job 对任何 caller 可见：
+
+```js
+// /tmp/n1_consequences.mjs
+view.owner: undefined   (undefined => unowned)
+panel list(undefined) sees it:              [ 'agent-alliance-4f6ba2740243473f' ]
+the originating session list("session-A") sees it: [ 'agent-alliance-4f6ba2740243473f' ]
+```
+
+而 `http.js` 的 `/tasks` 正是按 `jobs.list(undefined)` 拉的（`src/http.js:475`），
+所以**任何一个会话发起的后台 dispatch 都会出现在面板任务列表里**，包括在另一个会话里
+点 "kill" 就能杀掉它。
+
+配额也跟着串了。`activeJobCount` 按 `job.owner === owner` 计数（同文件 `:385-391`），
+所有无主 job 挤在**同一个全局桶**里：
+
+```js
+// /tmp/n1_consequences2.mjs
+11th UNOWNED job (any session): background job limit reached for this owner (limit: 10)
+10 owned jobs for sess-A started fine (separate bucket: 20 visible to A)
+panel (unowned view) count: 10
+```
+
+⇒ 会话 B 的 10 个后台任务会把会话 A 的第 11 个任务挡掉，报的还是"A 自己超限"。
+
+#### 为什么 193 个测试全绿却抓不到
+
+`tests/tools.test.js:224` 手造了一个 DSH **永远不会产生**的 agent 形状：
+
+```js
+const exec = { agent: { id: 'agent-1', sessionId: 'session-42' }, signal: ... }
+...
+assert.equal(spec.owner, 'session-42')
+assert.equal(typeof spec.owner, 'string', 'owner must be the SessionId string, never the Agent')
+```
+
+这条测试**断言了错误契约**：它给 fake agent 补了一个真实 Agent 没有的 `sessionId` 字段，
+于是 `assert.equal(typeof spec.owner, 'string')` 通过。`docs/SPEC-v2.md:187`
+（`owner: exec.agent?.sessionId,   // SessionId, NOT the Agent`）与
+`docs/MIGRATION-0.2.md:63` 把这个错误字段写进了规范，测试再照着规范造 fixture ——
+**规范、实现、测试三者自洽，但全部偏离了框架的现实。**
+
+正确的断言应该只用 DSH 真实形状：`{ id: 'session-42' }`，并断言 `spec.owner === 'session-42'`。
+在现有测试里跑这个断言会立刻失败（我手工验证：`spec.owner === undefined`）。
+
+#### 修复（1 行 × 2 处）
+
+```js
+owner: exec?.agent?.id,          // DSH: Agent.id IS the SessionId
+```
+
+同时把 `docs/SPEC-v2.md:187`、`docs/MIGRATION-0.2.md:63` 与
+`tests/tools.test.js:224` 的 fake agent 一并改成 `{ id: 'session-42' }`，
+并加一条"owner 必须等于 agent.id"的回归断言。
+
+#### 为什么它比 Claim A / B / C 都严重
+
+| | 性质 | 用户可见性 | 是否当前仍存在 |
+|---|---|---|---|
+| A | 面板圆桌不可用 | 立刻可见（报错） | 症状已修（回退到前台） |
+| B | 状态页谎报 | 立刻可见（点下去失败） | 仍存在 |
+| C | 成本结构浪费 | 不可见（账单） | 仍存在 |
+| **N1** | **job 脱离会话：通知丢失 + 进程泄漏 + 跨会话可见/可杀 + 配额互踩** | **不可见**，直到发现进程还在跑或任务列表里冒出陌生的 job | **仍存在** |
+
+A/B/C 都只是"某个功能不好用"，N1 是**正确性 + 资源 + 隔离**同时破损，且**静默**。
+
+---
+
+## 附：我尝试驳回但失败的其它候选（记录负面结果，避免重复劳动）
+
+| 我怀疑的缺陷 | 尝试的证伪方式 | 结果 |
+|---|---|---|
+| **zcode `{prompt}` 模板经 `replaceAll` 注入命令** | 用 `$'`、`` $` ``、`$&`、`$$` 做 payload，配 4 种模板，再真跑 `sh -c` 找 marker 文件（`/tmp/aa_fuzz.mjs` 等） | **无法构成注入**。`String.replaceAll` 的 `$`-pattern 确实会**破坏脚本文本**（如 prompt `"fix regex $& usage"` 被改写成 `"fix regex {prompt} usage"`），但破坏后的引号结构仍把 payload 关在单引号内，**注入 0 命中**。⇒ 只能算 medium 级的**内容损坏**（prompt 被静默篡改），不是 RCE。原报告未提及 `replaceAll` 语义，属**遗漏但非最优**。 |
+| **并发导入台账丢更新** | 两个 `importOne` 并发、加 `setTimeout` 拉大窗口、给 `/tmp` 副本插桩打点 | **打不掉，但也不成立**：`importOne` 在 `await` 之前就同步 `loadLedger`+`saveLedger` 吗？不是——但我实测两条并发都写进了台账（`ledger keys: ['claude:s1','claude:s2']`）。原因：`saveLedger` 是**同步** fs 调用，`loadLedger`→`saveLedger` 之间没有 `await`，Node 单线程下天然原子。**HEAD 又加了 `recordLedgerEntry` 写队列**（`src/importer/persist.js:97-112`），更无风险。⇒ 前一轮"未验证"的悬念可以关闭。 |
+| **`runner.js` 子进程在 abort/timeout 后未真正回收** | 真实 `spawnCli` + `sh -c` 带孙进程占住 stdout 管道 | **成立且严重，但属新缺陷线（见下）**。 |
+| **`/state` 的 `available` 其实有 detect** | grep 全部调用点 | 失败，确认为谎报（Claim B） |
+
+### 附带发现（未纳入 N1，但值得记录）
+
+`src/runner.js` 的 `settle` 只监听 `close`，而 `close` 要等**所有继承 stdout 管道的进程**退出。
+`zcode` 走 `sh -c`（`src/provider/zcode.js:55`），CLI 自己再 fork 子进程时，`SIGKILL` 打在 `sh`
+上、`sh` 死了，**孙进程仍持有 stdout 管道**，`close` 永不触发：
+
+```
+// /tmp/aa_runner_orphan.mjs，timeoutMs: 400
+timeout-only: STILL PENDING at 4000ms          ← 10× 超时后仍未 settle
+sleep survivors: 164289 sleep 30, ...          ← 孙进程活着
+```
+
+后果是 `spawnCli` 的 promise **永不 settle**，占着 `createSemaphore` 的槽位。我实测把
+`maxConcurrent: 2` 的两个槽全部占死后，**第三个任务永远卡在队列里**：
+
+```
+// /tmp/aa_wedge.mjs
+THIRD IS STUCK IN QUEUE (limit exhausted)
+```
+
+⇒ 这是一个独立的 high 缺陷（原报告 `01-bugs.md:169` 明确把"子进程 abort 回收"标为 ✅ CLEAN，
+**判断错误**：它只验证了 `child.kill()` 被调用，没验证 promise 是否 settle）。修法：监听 `exit`
+而非仅 `close`，并在 settle 后 `child.stdout.destroy()` / `child.stderr.destroy()`；
+或 spawn 时用 `detached: true` + 进程组 kill（`process.kill(-child.pid, 'SIGKILL')`）。
+
+探针脚本均写在 `/tmp` 且已删除；仓库源码零改动。

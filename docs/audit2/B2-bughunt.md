@@ -520,6 +520,7 @@ clean verdicts.)
 | F5 | In-flight HTTP dispatch not aborted by disposal | **CONFIRMED** (impact low) | low | `repro3-inflight.mjs`, `repro3b-stale.mjs` |
 | F6 | `recent` ring and other module state | **CLEAN** | — | `repro6-recent.mjs` |
 | F7 | Unowned panel jobs survive disposal; reload exhausts the bucket and the POST stalls | **CONFIRMED** | low | `repro8-job-reload.mjs`, `repro9-job-across-reload.mjs` |
+| F8 | Cold-cache `/state` availability probe has no in-flight coalescing (N requests → N × P subprocesses) | **CONFIRMED** | low | `repro11-detect-storm.mjs`, `repro11b-storm-real.mjs` |
 | — | Late/removed `webServer` service | **CLEAN** | — | `repro7-http-dispose.mjs` |
 | — | Roundtable `batches` map | **absent** (already removed) | — | `grep -rn batches src/ client.js` → no match |
 
@@ -536,3 +537,73 @@ clean verdicts.)
    with `unable to open database file`. Only GC reclaims them, so the ceiling is
    nondeterministic. Fix: scope each handle to the call and `close()` in `finally`.
 3. **Report path:** `docs/audit2/B2-bughunt.md`.
+
+### F8 (low) — cold-cache `/state` probe has no in-flight coalescing: N concurrent panel requests spawn N × providers subprocesses
+
+`src/http.js:335-351` (added while this audit was running; lines verified against the
+current working tree) memoises the availability probe **after** it resolves:
+
+```js
+let detectCache = { at: 0, rows: [] }
+async function detectRows(force = false) {
+  const now = Date.now()
+  if (!force && now - detectCache.at < DETECT_TTL_MS && detectCache.rows.length > 0) return detectCache.rows
+  let rows = []
+  rows = typeof registry?.detectAll === 'function' ? await registry.detectAll() : []   // awaits, then stores
+  detectCache = { at: Date.now(), rows }
+  return rows
+}
+```
+
+Every request that arrives before the first probe settles misses the cache and starts
+its own `detectAll()`. `src/provider/types.js:28-43` implements `detectAll()` as a
+sequential loop that `await`s `provider.detect()` per provider, and each `detect()` spawns
+`<cli> --version` (`provider/claude.js:31-35`, and the same shape in codex/opencode).
+
+**Reproduction (simulated probe cost, isolates the coalescing defect):**
+
+```bash
+cd /tmp/b2 && timeout 90 node repro11-detect-storm.mjs
+```
+
+```
+10 concurrent /state requests -> 10 detectAll() invocations (each spawns per configured provider)
+all answered ok: true | elapsed: 314 ms
+second burst of 10 on a warm cache -> 0 new detectAll() calls (TTL honoured)
+```
+
+**Reproduction with the real registry** (three enabled providers, real `--version`
+spawns, none of the CLIs present on this host so each returns quickly):
+
+```bash
+cd /tmp/b2 && timeout 120 node repro11b-storm-real.mjs
+```
+
+```
+8 concurrent /state on a cold cache -> 8 answers in 1060 ms
+providers in the first answer: ["claude:false"]
+```
+
+Eight simultaneous `/state` requests produce eight full detect sweeps. Against a host
+where each `--version` costs 50-200 ms, a cold burst is `N requests × P providers`
+process launches instead of `P`.
+
+**Reachability:** every open panel tab polls `/tasks` (2.5 s) but `/state` only on load
+and on explicit refresh, so a single tab does not self-amplify. The burst appears when a
+user opens several tabs/panels at once, or after any host restart where the cache is
+cold and clients reconnect together.
+
+**Fix.** Cache the *promise*, not just the result:
+
+```js
+let detectInFlight
+async function detectRows(force = false) {
+  const now = Date.now()
+  if (!force && now - detectCache.at < DETECT_TTL_MS && detectCache.rows.length > 0) return detectCache.rows
+  detectInFlight ??= (async () => {
+    try { const rows = await registry.detectAll(); detectCache = { at: Date.now(), rows }; return rows }
+    finally { detectInFlight = undefined }
+  })()
+  return detectInFlight
+}
+```

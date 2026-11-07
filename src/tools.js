@@ -126,6 +126,21 @@ function serviceOf(ctx, service) {
 }
 
 /**
+ * Report through the plugin logger when the context offers one.
+ *
+ * `logger` is a Cordis built-in accessor, not a registered service, so
+ * `ctx.get('logger')` is always undefined; only the property access works.
+ * @param {object} ctx plugin context
+ * @param {string} message diagnostic text
+ * @returns {void}
+ */
+function warn(ctx, message) {
+  try {
+    ctx?.logger?.warn?.(message)
+  } catch { /* a context without a logger must not break the caller */ }
+}
+
+/**
  * Start one background job through the jobs service.
  *
  * `jobs.start()` throws when the composition mounts `ctx.jobs` but no job
@@ -143,10 +158,13 @@ function startJob(ctx, spec) {
   try {
     return jobs.start(spec)
   } catch (error) {
-    const logger = serviceOf(ctx, 'logger')
-    if (logger !== undefined && typeof logger.warn === 'function') {
-      logger.warn('agent-alliance: background job unavailable, running inline: ' + String(error?.message || error))
-    }
+    const message = String(error?.message || error)
+    // Only the missing-controller refusal may degrade to inline execution. A
+    // capacity cap ("background job limit reached") or an invalid spec is a
+    // real refusal: silently running inline would spend up to the foreground
+    // budget with no job id to cancel.
+    if (!message.includes('no job controller serves')) throw error
+    warn(ctx, 'agent-alliance: no job controller in this composition; running inline instead of background')
     return undefined
   }
 }

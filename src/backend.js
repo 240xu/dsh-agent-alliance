@@ -225,15 +225,17 @@ function subagentBackend({ ctx, config, providerId, providerName, label, parent 
       const started = Date.now()
       const text = toPromptText(request.prompt)
       const signal = request.signal ?? new AbortController().signal
-      // Reject a resume request before starting anything: official providers are
-      // one-shot, and startActivation spawns a billed child plus a protocol
-      // handshake. Guarding after it would charge the caller for an error that
-      // was knowable up front, and a missing payload would mask the real reason.
-      if (hasResumeId(request.resumeSessionId)) throw resumeRejection(providerId, providerName)
       const route = subagentRoute(ctx, config, providerId, parent)
       if (route === undefined) {
         throw new Error(OFFICIAL_DETAIL + ' "' + providerName + '" is no longer registered')
       }
+      // Reject a resume request before starting anything: official providers are
+      // one-shot, and startActivation spawns a billed child plus a protocol
+      // handshake. Guarding after it would charge the caller for an error that
+      // was knowable up front, and a missing payload would mask the real reason.
+      // Ordered after the route check so a provider that is no longer registered
+      // is reported as such rather than as a resume problem.
+      if (hasResumeId(request.resumeSessionId)) throw resumeRejection(providerId, providerName)
       const activation = await route.service.startActivation({
         provider: providerName,
         label: promptLabel(providerId, text),

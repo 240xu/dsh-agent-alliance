@@ -356,10 +356,15 @@ export function registerHttp(webServer, { ctx, io, resolver, registry, config, h
     const byId = new Map(probed.map((row) => [row.id, row]))
     const providers = resolver.list(undefined).map((info) => {
       const probe = byId.get(info.id)
-      if (probe === undefined) return info
+      if (probe === undefined) {
+        // No probe row means availability is unknown (detectAll threw, or this
+        // provider was not included). Reporting resolver.list()'s optimistic
+        // `available: true` here would recreate the lie this route exists to
+        // remove, so an unprobed provider is reported unavailable with a reason.
+        return { ...info, available: false, detail: 'availability not probed' }
+      }
       return {
         ...info,
-        // Unknown stays unavailable rather than pretending the provider works.
         available: probe.available === true,
         ...(typeof probe.detail === 'string' && probe.detail !== '' ? { detail: probe.detail } : {}),
       }
