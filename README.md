@@ -21,6 +21,10 @@ DeepSeek Harness 双面插件：让 DSH 与 **Claude Code / Codex / OpenCode / Z
 - `@deepseek-ai/dsh-subagent-codex` → provider `codex`
 - `@deepseek-ai/dsh-subagent-claude-code` → provider `claude-code`
 
+> 这两个名字由**官方包自己的 `providerName` 配置**决定（默认就是上面这两个）。如果你在启用官方包时改了
+> `providerName`，必须把本插件的 `providers.<id>.subagentProvider` 改成同一个名字，否则官方路径会
+> **静默不生效**并回落到 CLI。面板「状态」标签会在 `detail` 里说明真实的注册名，便于发现这种不一致。
+
 官方子代理是**一次性**的：`resumeSessionId` 在这条路上会被明确拒绝，需要续聊请走 CLI 包装层
 （也可用 `agent_sessions` 找到外部会话 id 后显式指定）。每个工具结果都带 `backend` 字段，标明这次走的是哪条路。
 

@@ -11,12 +11,12 @@
 | # | 问题 | 判决 |
 |---|---|---|
 | Q1 | 双工具重复是否必须移除 `codex` 默认 subagentProvider | **需改默认值**（推荐移除），但**不要把 `agent_dispatch` 的 codex 一并删掉** |
-| Q2 | `startActivation` 调用形状 | **基本正确**；`prompt`/`cwd`/`delivery`/`dispose` 全部对齐。**一处真缺陷**：我们的 `cwd` 传的是相对/任意字符串，官方要求绝对路径 |
+| Q2 | `startActivation` 调用形状 | **完全正确**；`prompt`/`cwd`/`delivery`/`dispose`/未知字段全部对齐（`cwd` 的相对路径由 service 解析，我一度怀疑、已撤回）。**唯一问题是 `model` 被静默丢弃** |
 | Q3 | resume 拒绝是否为真 | **为真**，但我们的错误文案**指错了方向**（说"用 CLI provider 续聊"，而 CLI 的 codex 会话与官方 thread 根本不是同一个东西） |
 | Q4 | `permissionMode` 默认 `never` 是否安全 | **不安全**（对"模型可自主要求"的场景）。`never` 是"不审批"，不是"有沙箱"，且 README 把它称为 *Safe default* |
 | Q5 | `maxConcurrent` 是否仍约束官方路径 | **约束，且相互独立**：`maxConcurrent`(3) < `maxActiveSubagents`(8)，我们的闸门更严，不会双计 |
 | Q6 | `providerName` 改动会怎样 | **静默降级到 CLI**，无任何告警——这是最容易被误判为"官方路径生效了"的陷阱 |
-| Q7 | 文档被官方源码推翻之处 | **1 处硬矛盾**（`childId` 语义）+ **1 处误导**（无 system prompt 章节） |
+| Q7 | 文档被官方源码推翻之处 | **1 处硬矛盾**（`externalSessionId = childId` 语义）+ **2 处遗漏/误导**（无 system prompt 章节；README 暗示了不存在的等价性） |
 
 ---
 
@@ -96,7 +96,7 @@ it finishes.**"
 3. 但"默认走官方 provider"这个选择**不该由我们替用户做**——因为我们的路径**绕过官方工具**，
    在模型眼里是"另一个更差的 Codex"，而它连 system prompt 都没占上。
 
-具体改法（`src/config.js:19`）：
+具体改法（`src/config.js:19`，`claude` 在 `:18`）：
 
 ```js
 // 之前
@@ -105,12 +105,29 @@ codex: { enabled: true, subagentProvider: 'codex' },
 codex: { enabled: true },
 ```
 
-同时**保留 `claude` 的同款默认**（`config.js:18`）——理由是对称的：`subagent-claude-code` 启用后
+同时**考虑 `claude` 的同款改动**（`config.js:18`）——理由是对称的：`subagent-claude-code` 启用后
 同样会有官方工具。
 
 > 补充：如果不想改默认，退而求其次的最小修复是**给我们自己的 `agent_dispatch` 注册一段
 > system prompt 章节**，说明它何时优于官方工具（需要阻塞答案 / 面板无 Agent / 想要统一
 > 四家 provider 的接口）。但那是"补齐竞争条件"，不是"消除重复"，我更推荐改默认值。
+
+#### 这个改法我已实测验证不会破坏面板路径
+
+```
+current default (subagentProvider: codex)
+   with live parent -> kind = subagent | text = official
+   panel (no parent)-> kind = cli      | text = cli-answer
+recommended default (CLI-only)
+   with live parent -> kind = cli      | text = cli-answer
+   panel (no parent)-> kind = cli      | text = cli-answer
+```
+
+（`/tmp/d1_q1.mjs`，真实 `createBackendResolver`；脚本已删。）
+
+关键：**panel/HTTP 路径本来就永远走 CLI**（HTTP 没有 Agent，`subagentRoute` 的
+`isLiveAgent` 恒 false，`backend.js:78`）。所以改默认值**只影响有活体 Agent 的工具路径**，
+面板行为零变化——这正是我们想要的最小影响面。
 
 > **不建议**删除 `agent_dispatch` 的 codex 能力：HTTP/panel 路径（`src/http.js` 的
 > `backendOf`）永远拿不到 Agent，**只能走 CLI**；删掉会让面板对 codex 彻底不可用。
@@ -119,7 +136,7 @@ codex: { enabled: true },
 
 ## Q2 — `startActivation` 调用形状对齐
 
-### 判决：**四种字段全部对齐；`cwd` 有一处真实缺陷**
+### 判决：**全部字段对齐（含一处自我撤回）；唯一实质问题是 `model` 被静默忽略**
 
 我们的调用（`src/backend.js:242-262`）：
 ```js
@@ -164,25 +181,29 @@ private notifySettlement(activation, terminal) {
 唯一副作用：`manager.ts:507` 的 `establishExternalCatalogChild` 只在 `delivery === 'parent'`
 时执行，所以**我们的派发不会出现在 `subagent/catalog` 里**（见 Q1 危害 3）。这是设计选择，不是 bug。
 
-#### ❌ 真实缺陷：`cwd` 没有做绝对化
+#### ✅ `cwd` 我一度怀疑有缺陷，核对后**撤回**（保留记录以免重复劳动）
 
-`backend.js:239-241` 原样透传 `request.cwd`。但：
+我最初怀疑：`backend.js:245` 原样透传 `request.cwd`，而 `ResolvedSubagentStartRequest.cwd`
+的文档写的是 "**Absolute** child directory"（`types.ts:196-199`），codex provider 又有
+`assertUsableCwd` 强校验绝对性（`subagent-codex/src/index.ts:76`）——
+看起来相对路径会在 provider 处炸掉。
 
-- `ResolvedSubagentStartRequest.cwd`（`types.ts:196-199`）文档写的是
-  **"Absolute child directory captured from the parent or explicit request."**
-- service 层其实**会**帮忙解析相对路径（`manager.ts:531-537` `resolveDirectory`：
-  `isAbsolute(cwd) ? cwd : resolve(await workingDirectory.ensure(...), cwd ?? '.')`）
-- **但 codex provider 在更后面又校验一次绝对性**（`index.ts:76` `assertUsableCwd`），
-  而那时 `manager` 已经把相对路径解析成绝对路径了 —— 所以**相对路径其实是通的**。
+**证伪过程**：`manager.startExternal` 在调用 provider **之前**先做
+`const cwd = await this.resolveDirectory(spec.request, spec.signal)`（`manager.ts:492`），
+然后 `this.host.startExternal(spec.provider, { ...spec.request, cwd, ... })`（`manager.ts:500-502`）
+——**传下去的是已解析的绝对路径**。`resolveDirectory`（`manager.ts:526-533`）：
 
-  ⇒ 我需要收回这条。**重新核对**：`manager.startExternal` 先 `resolveDirectory`，再
-  `this.host.startExternal(spec.provider, {...spec.request, cwd, ...})`（`manager.ts:500-502`），
-  传下去的是**已解析的绝对 cwd**。所以 `assertUsableCwd` 不会因相对路径失败。
+```js
+const cwd = request.cwd !== undefined && isAbsolute(request.cwd)
+  ? request.cwd
+  : resolve(await this.ctx.workingDirectory.ensure(request.parent, signal), request.cwd ?? '.')
+```
 
-  **这条撤回，不是缺陷。** 我在报告里保留这个撤回记录，避免下一个审计重复怀疑。
+⇒ 相对路径、`undefined`、`.` 全部会被 service 解析成绝对路径，`assertUsableCwd` 不会因
+相对路径失败。**这不是缺陷，撤回。**
 
-  （真正会失败的是**目录不存在或不可进入**的情况，但那是用户输入错误，且 `assertUsableCwd`
-  会给出清晰错误 `child cwd is not an accessible directory`，属正常报错。）
+（真正会失败的是目录不存在/不可进入；`assertUsableCwd` 会给出
+`child cwd is not an accessible directory`，属正常报错。）
 
 #### `model` / `timeoutMs` 被静默丢弃 —— 这是设计，但值得写进契约
 
@@ -273,7 +294,30 @@ provider"这半句（它只在**同一个外部 CLI 会话**的场景下成立�
 | `approve-for-me` | `approvalPolicy: on-request`, `approvalsReviewer: auto_review`, `sandbox: workspace-write` | Route permission requests through Codex automatic review without a human |
 | `dangerously-bypass-approvals-and-sandbox` | `approvalPolicy: never`, `sandbox: danger-full-access` | Skip approval and sandbox enforcement; this value must be selected explicitly |
 
-#### 关键事实
+#### 关键事实（源码级，比 README 表格更硬）
+
+`subagent-codex/src/wire.ts:32-44` 是**实际发往 `thread/start` 的参数表**：
+
+```js
+const THREAD_PERMISSION_PARAMS: Readonly<Record<CodexPermissionMode, JsonObject>> = {
+  never: { approvalPolicy: 'never' },
+  'approve-for-me': {
+    approvalPolicy: 'on-request',
+    approvalsReviewer: 'auto_review',
+    sandbox: 'workspace-write',
+  },
+  'dangerously-bypass-approvals-and-sandbox': {
+    approvalPolicy: 'never',
+    sandbox: 'danger-full-access',
+  },
+}
+```
+
+**`never` 分支的对象里只有 `approvalPolicy: 'never'` 一个键——`sandbox` 键完全不存在。**
+对照 README:50 的措辞 "sandbox omitted"，这条是精确的：不是"设成某个宽松值"，
+而是**根本不发送**，于是 Codex 使用它自己的原生配置（可能配了，也可能没配）。
+
+#### 其余关键事实
 
 1. **默认值是 `never`**：`run.ts:73` `export const DEFAULT_CODEX_PERMISSION_MODE: CodexPermissionMode = 'never'`
    （注释写的是 `/** Safe default for unattended Codex runs. */`）。
@@ -418,7 +462,7 @@ dispatch -> {"text":"cli","externalSessionId":null,"durationMs":0,"backend":"cli
 
 ## Q7 — 文档被官方源码推翻之处
 
-### 判决：**2 处**（1 硬矛盾 + 1 遗漏）
+### 判决：**3 处**（1 硬矛盾 + 2 遗漏/误导）
 
 #### Q7-1（硬矛盾）— SPEC 说 `externalSessionId = activation.childId`，但那是 DSH 内部 UUID，不是 Codex 会话
 
@@ -431,7 +475,7 @@ dispatch -> {"text":"cli","externalSessionId":null,"durationMs":0,"backend":"cli
 `brandString<SessionId>(randomUUID())` —— **一个 DSH 内部的、与 Codex 无关的随机 UUID**。
 
 后果：`agent_dispatch` 返回的 `externalSessionId` 在两条路径上**语义完全不同**，
-而文档与工具描述（`src/tools.js:258` "resumeSessionId continues one of that agent's existing
+而文档与工具描述（`src/tools.js:318` "resumeSessionId continues one of that agent's existing
 sessions (find ids with agent_sessions)"）把二者混为一谈。见 Q3 的附带分析。
 
 **修法**：在 SPEC 里把两种路径的 `externalSessionId` 语义分开写，并在官方路径的返回里

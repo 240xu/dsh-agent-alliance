@@ -390,3 +390,45 @@ test('list deduplicates config-only providers and never starts a run', () => {
   // 没有 parent 时官方路径不评估，连 list() 探测都不需要。
   assert.equal(calls.getProvider.length, 0)
 })
+
+test('list() explains why the official path was skipped when the name does not match', async () => {
+  const { service } = fakeSubagents({ names: ['codex-renamed'] })
+  const resolver = createBackendResolver({
+    ctx: { subagents: service, agents: fakeParent().agents },
+    registry: createRegistry([cliProvider('codex')]),
+    config: baseConfig, // subagentProvider: 'codex'
+  })
+  const info = resolver.list(undefined).find((row) => row.id === 'codex')
+  assert.equal(info.kind, 'cli')
+  // A bundle whose providerName differs from our configured subagentProvider
+  // leaves the official path silently unused; the reason must be visible.
+  assert.match(String(info.detail), /not registered/)
+  assert.match(String(info.detail), /codex-renamed/, 'the actual registered names must be shown')
+})
+
+test('a full subagent pool is reported as someone else holding it', async () => {
+  const { service } = fakeSubagents({ names: ['codex'] })
+  const failing = {
+    ...service,
+    async startActivation() {
+      const error = new Error('activation limit reached')
+      error.code = 'ACTIVATION_LIMIT_REACHED'
+      throw error
+    },
+  }
+  const { parent, agents } = fakeParent()
+  const resolver = createBackendResolver({
+    ctx: { subagents: failing, agents },
+    registry: createRegistry([cliProvider('codex')]),
+    config: baseConfig,
+  })
+  const backend = resolver.resolve({ provider: 'codex', parent })
+  await assert.rejects(
+    () => backend.dispatch({ prompt: 'work' }),
+    (error) => {
+      assert.match(String(error.message), /pool is full/)
+      assert.match(String(error.message), /official subagent tool/)
+      return true
+    },
+  )
+})

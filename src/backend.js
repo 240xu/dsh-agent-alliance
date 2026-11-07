@@ -72,6 +72,22 @@ function usableSubagentService(ctx, name) {
   return provider === undefined || provider === null ? undefined : service
 }
 
+/**
+ * Names registered on the subagent service, or an empty list when it is absent.
+ * @param {object} ctx plugin context
+ * @returns {string[]} registered provider names
+ */
+function registeredSubagentNames(ctx) {
+  const service = serviceOf(ctx, 'subagents')
+  if (!isObject(service) || typeof service.list !== 'function') return []
+  try {
+    const names = service.list()
+    return Array.isArray(names) ? names.map(String) : []
+  } catch (err) {
+    return []
+  }
+}
+
 function subagentRoute(ctx, config, providerId, parent) {
   const name = configuredSubagentName(config, providerId)
   if (name === undefined) return undefined
@@ -150,10 +166,36 @@ function hasResumeId(value) {
 }
 
 function resumeRejection(providerId, providerName) {
+  // The two paths expose DIFFERENT things under `externalSessionId`: an official
+  // run returns a DSH-minted id for one ephemeral thread (never resumable),
+  // while a CLI run returns that vendor's own session id (resumable). Telling
+  // the caller to "use the CLI provider" without saying the ids are not
+  // interchangeable would send it looking for an official id that no CLI can
+  // resume.
   return new Error(
     'resumeSessionId is not supported on the official subagent path for provider "' + providerId + '"'
-    + ' (official provider "' + providerName + '" is one-shot); use the CLI provider for external-session resume',
+    + ' (official provider "' + providerName + '" is one-shot and mints a fresh id per run).'
+    + ' Those ids are not resumable and are not the same as the CLI provider\'s external session ids:'
+    + ' to continue an external session, call the CLI provider with that provider\'s own session id'
+    + ' (find them with agent_sessions)',
   )
+}
+
+/**
+ * Rewrite a subagent pool rejection so the caller knows whose limit it hit.
+ * @param {unknown} error original failure
+ * @returns {unknown} the error, annotated when it is a pool rejection
+ */
+function annotatePoolRejection(error) {
+  const code = isObject(error) ? error.code : undefined
+  const message = String(error?.message || '')
+  if (code !== 'ACTIVATION_LIMIT_REACHED' && !/ACTIVATION_LIMIT|active subagents/i.test(message)) return error
+  const annotated = new Error(
+    message + ' — the subagent service pool is full; another delegation (possibly the official'
+    + ' subagent tool invoked directly by the model) holds it, not this plugin',
+  )
+  if (code !== undefined) annotated.code = code
+  return annotated
 }
 
 function stopFailure(providerName, result) {
@@ -236,17 +278,22 @@ function subagentBackend({ ctx, config, providerId, providerName, label, parent 
       // Ordered after the route check so a provider that is no longer registered
       // is reported as such rather than as a resume problem.
       if (hasResumeId(request.resumeSessionId)) throw resumeRejection(providerId, providerName)
-      const activation = await route.service.startActivation({
-        provider: providerName,
-        label: promptLabel(providerId, text),
-        request: {
-          prompt: [{ type: 'text', text }],
-          parent,
-          ...(typeof request.cwd === 'string' && request.cwd !== '' ? { cwd: request.cwd } : {}),
-        },
-        signal,
-        delivery: 'caller',
-      })
+      let activation
+      try {
+        activation = await route.service.startActivation({
+          provider: providerName,
+          label: promptLabel(providerId, text),
+          request: {
+            prompt: [{ type: 'text', text }],
+            parent,
+            ...(typeof request.cwd === 'string' && request.cwd !== '' ? { cwd: request.cwd } : {}),
+          },
+          signal,
+          delivery: 'caller',
+        })
+      } catch (error) {
+        throw annotatePoolRejection(error)
+      }
       let primary
       try {
         const result = await activation.result
@@ -365,11 +412,25 @@ export function createBackendResolver({ ctx, registry, config } = {}) {
       }
       const cli = cliLookup(registry, providerId)
       if (cli.found) {
+        // The official provider is configured but unusable. Saying only "CLI"
+        // would hide the common trap where a bundle's providerName differs from
+        // the configured subagentProvider, so the official path silently never
+        // activates.
+        const wanted = configuredSubagentName(config, providerId)
+        const registered = registeredSubagentNames(ctx)
+        const reason = wanted === undefined
+          ? undefined
+          : registered.includes(wanted)
+            ? 'registered but this call has no live parent Agent'
+            : 'configured but not registered on ctx.subagents (is the bundle enabled, and does its'
+              + ' providerName match "' + wanted + '"? registered: '
+              + (registered.length > 0 ? registered.join(', ') : 'none') + ')'
         infos.push({
           id: providerId,
           label: backendLabel(cli.provider, providerId),
           kind: 'cli',
           available: true,
+          ...(reason === undefined ? {} : { detail: OFFICIAL_DETAIL + ' "' + String(wanted) + '" ' + reason }),
         })
         continue
       }
