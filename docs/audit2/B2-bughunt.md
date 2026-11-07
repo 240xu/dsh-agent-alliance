@@ -246,9 +246,9 @@ needs a no-op `close` or the injection contract needs to keep skipping the close
 
 ### F4 (medium) — a killed job that never settles holds its owner slot forever, and later background calls **silently become blocking inline calls**
 
-`src/tools.js:160-170` (`jobHooks`) hands the job substrate a `done` promise derived
+`src/tools.js:184-194` (`jobHooks`) hands the job substrate a `done` promise derived
 from the produced work. If the produced work never settles, `done` never settles, so
-the job stays `stopping` after `kill()` — forever. `src/tools.js:136-147` (`startJob`)
+the job stays `stopping` after `kill()` — forever. `src/tools.js:153-171` (`startJob`)
 then swallows the "job limit reached" error and `agent_dispatch` falls back to the
 inline path, which blocks the caller's turn for the full dispatch duration.
 
@@ -336,7 +336,7 @@ The record is therefore unreachable for cleanup and permanently occupies one slo
 ### F5 (low) — an in-flight HTTP dispatch is not cancelled by plugin disposal; it keeps running and answers normally
 
 Disposal removes the route (`webServer.register`'s disposer) but nothing owns the
-already-running handler. In `src/http.js:384-388` the handler creates a bare
+already-running handler. In `src/http.js:439` the handler creates a bare
 `new AbortController().signal` and discards the controller:
 
 ```js
@@ -400,7 +400,7 @@ return () => { webServerDisposer(); for (const ac of inflight) ac.abort(new Erro
 
 ### F6 — `recent` dispatch ring: **CLEAN** (bounded, no finding)
 
-`src/http.js:266` keeps `recent = []`, and `remember()` (`http.js:292-296`) trims it:
+`src/http.js:266` keeps `recent = []` (`http.js:266`), and `remember()` (`http.js:294-295`) trims it:
 
 ```js
 recent.push(entry)
@@ -433,7 +433,7 @@ returns nothing.
 ### F7 (low) — panel jobs are unowned and survive plugin disposal; reload can exhaust the shared job bucket and the panel then blocks
 
 By design the panel starts **unowned** jobs (`ctx.jobs.start({ kind, label, run })` with
-no `owner`, `src/http.js:430-448`). Unowned jobs are not tied to a session, so *nothing
+no `owner`, `src/http.js:...`). Unowned jobs are not tied to a session, so *nothing
 stops them when the plugin fiber is disposed* — not the route disposer, not a session
 teardown. In a long-lived host (or during an HMR loop) each reload can add another
 running job to the one shared "unowned" bucket, whose cap defaults to 10.
@@ -540,7 +540,7 @@ clean verdicts.)
 
 ### F8 (low) — cold-cache `/state` probe has no in-flight coalescing: N concurrent panel requests spawn N × providers subprocesses
 
-`src/http.js:335-351` (added while this audit was running; lines verified against the
+`src/http.js:335-352` (added while this audit was running; lines verified against the
 current working tree) memoises the availability probe **after** it resolves:
 
 ```js
@@ -607,3 +607,136 @@ async function detectRows(force = false) {
   return detectInFlight
 }
 ```
+
+### F3 addendum — the fix must close *only* handles this module opened
+
+A naive `finally { db.close() }` around the query bodies breaks the existing provider
+tests, because `openDb` (the test injection) returns the **same shared handle** on every
+call, and those tests call `listSessions` then `readSession` on it:
+
+```bash
+cd /tmp/b2 && timeout 30 node repro4f-injection.mjs
+```
+
+```
+first use: [ [Object: null prototype] { id: 's1' } ]
+second use THREW: database is not open -> shared-stub tests would break
+```
+
+`tests/provider-opencode.test.js:19-30` (`memDb()`) and
+`tests/provider-zcode.test.js:42-58` both use that pattern. So the fix has to keep
+ownership explicit:
+
+```js
+async function withReadDb(fn) {
+  if (openDb) return fn(await openDb())          // injection owns the handle
+  const { DatabaseSync } = await import('node:sqlite')
+  const db = new DatabaseSync(paths.dbPath, { readOnly: true })
+  try { return await fn(db) } finally { db.close() }
+}
+```
+
+i.e. close only the handle this module created. That keeps the injection contract
+unchanged (a stub can still share one in-memory DB) while removing the production leak.
+
+### F3 addendum 2 — the in-progress fix (commit `f6eaf59` era, uncommitted) is **incomplete**: `listSessions` still leaks
+
+The working tree now converts `readSession` and `exportSession` to a `withDb(...)` helper
+in both providers, but leaves `listSessions` on the old direct `await db()` path
+(`src/provider/opencode.js:99`, `src/provider/zcode.js:...`). Measured per entry point
+against the current working tree:
+
+```bash
+cd /tmp/b2 && timeout 90 node repro13-partial-fix.mjs
+```
+
+```
+opencode.listSessions              20 calls ->  20 descriptors LEAK
+opencode.readSession               20 calls ->   0 descriptors closed
+opencode.exportSession             20 calls ->   0 descriptors closed
+zcode.listSessions                 20 calls ->  20 descriptors LEAK
+zcode.readSession               20 calls ->   0 descriptors closed
+zcode.exportSession               20 calls ->   0 descriptors closed
+```
+
+(The zcode line printed `-20` once because the opencode leak had not yet been collected;
+the steady state is one descriptor per `listSessions` call for both providers.)
+
+**Why this matters more than the other two entry points:** `listSessions` is the only
+one the panel calls on a timer — `/sessions` calls it for **every** configured provider
+on every refresh, and the client-side `LIST_POLL_MS` is 2500 ms. Leaving the busy path
+leaking while fixing the rare paths leaves the practical defect in place.
+
+**Required change** — `listSessions` must use the same helper, which also means moving
+its `try/catch` inside the callback so the handle closes on the error path:
+
+```js
+async function listSessions({ query, limit = 20 } = {}) {
+  return withDb((d) => {
+    try { … } catch (err) { throw new Error('opencode listSessions 失败: ' + …) }
+  })
+}
+```
+
+Note the current `withDb` bodies are *not* reindented (the diff wraps existing statements
+in `(d) => {` without touching indentation). That is cosmetic, but it makes the
+`try/finally` easy to mis-scope on the next edit; reindenting while adding `listSessions`
+is worth doing in the same change.
+
+### F4 addendum — current working tree: half of F4 is already fixed; the permanent slot pin is **not**
+
+`startJob` (`src/tools.js:153-171`) now rethrows every refusal except the
+missing-controller case, so half 2 of F4 is fixed in the working tree — a "background
+job limit reached" is no longer silently converted into a blocking inline call:
+
+```bash
+cd /tmp/b2 && timeout 40 node repro5-degrade.mjs
+```
+
+```
+1) first background job: agent-alliance-210775843e7547ce
+   kill outcome: requested
+   status 300ms after kill: stopping
+   producer never settled because dispatch() ignores the abort signal
+2) second background:true call -> REJECTED: background job limit reached for this owner (limit: 1); use job_kill to stop an unneeded j
+   elapsed: 1 ms; backend dispatch count: 1
+3) plugin-warned about the fallback? false
+```
+
+Half 1 is **unchanged**: `jobHooks().done` (`src/tools.js:184-194`) is still
+`Promise.resolve(produced).then(...)` with no cancellation race, so a producer that
+ignores `signal` keeps the record in `stopping` indefinitely:
+
+```bash
+cd /tmp/b2 && timeout 40 node repro5d-hang.mjs
+```
+
+```
+after +2000ms -> status=stopping finishedAt=undefined
+after +4000ms -> status=stopping finishedAt=undefined
+still listed by jobs.list(undefined): true
+kill again returns: requested
+```
+
+Consequence in the current tree: the slot is pinned and every later *background* call
+now **fails loudly** instead of degrading (better), but the leaked record cannot be
+removed (`remove()` refuses non-terminal jobs) and the owner's background capacity is
+permanently reduced until process exit. The `Promise.race` fix above is still required.
+
+### F7 addendum — the inline fallback that F7 describes is also gone from the roundtable route?
+
+Partially. `src/http.js` still falls back to inline when `jobs.start` throws
+(`http.js:449-457`), and the panel's roundtable path has *no* `background` flag to
+distinguish "user wanted a job" from "no jobs service". So an exhausted bucket still
+produces `{ ok: true, jobId: null, text }` and a stalled POST:
+
+```bash
+cd /tmp/b2 && timeout 90 node repro9-job-across-reload.mjs
+```
+
+```
+cycle 4 -> {"ok":true,"jobId":null,"text":"参与 1 家 / 成功 1 家\n圆桌问题: job 4\n\n[slow] (4000ms)\ndone\n"}
+job records still live after 4 reloads: completed,completed,completed
+```
+
+F7 stands as written for the panel path.

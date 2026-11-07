@@ -58,31 +58,48 @@ child.logger.warn     => function
 ```
 
 `logger` is a **Context property** (`vendor/cordis/src/context.ts:81`, `this.logger = new LoggerService(self)`),
-not a registry service, so `Reflect.get(name)` returns nothing for it (`reflect.ts:227-230` consults
-`reflect.props`/store, and `logger` is neither). Every failure path in the new catch block is therefore a silent
-swallow — precisely the "invisible degradation" the audit criticised elsewhere.
+not a registry service, so `ctx.get('logger')` returns nothing (`reflect.ts:227-230` consults `reflect.props` and
+the service store; `logger` is in neither).
 
-The plugin already has a correct pattern for this: `index.js:65-73`'s `logFailure` reads `ctx.logger?.[level]`
-directly and calls it. The patch ignores it and reinvents it incorrectly.
+**Correction to an earlier draft of this section.** I first wrote that the `tools.js` diagnostic is dead. It is
+not: that patch calls the plugin's own `serviceOf(ctx, 'logger')`, which falls back to a bare property read
+(`src/tools.js:118-121`), and a live probe against the installed Cordis confirms it resolves:
 
-**BAD vs CORRECT**
-
-```js
-// BAD (as committed): dead branch, no diagnostic
-const logger = serviceOf(ctx, 'logger')
-if (logger !== undefined) logger.warn(...)
-
-// CORRECT: use the property the plugin already relies on, guarded
-const log = ctx?.logger?.warn
-if (typeof log === 'function') log.call(ctx.logger, 'agent-alliance: …')
+```
+$ node real-logger.mjs
+serviceOf(ctx,"logger") type = function
+logger.warn type            = function
+=> R1.1 claim "always undefined" is: FALSE
 ```
 
-`src/http.js` has the same bug in a different form — `ctx?.get?.('logger')`:
+So **`tools.js` logs correctly, and `http.js` does not.** The two call sites use different mechanisms, and only
+one of them works:
+
+| site | mechanism | resolves? |
+|---|---|---|
+| `src/tools.js:126-129` | `serviceOf(ctx, 'logger')` → falls back to `ctx.logger` | **yes** |
+| `src/http.js:500` | `ctx?.get?.('logger')` → no fallback | **no** |
+
+```
+$ node http-logger.mjs
+http.js uses ctx?.get?.('logger') => undefined   <-- the log is DEAD
+tools.js uses serviceOf(ctx,"logger") which falls back to ctx.logger => function
+```
+
+**BAD vs CORRECT** (for `src/http.js:498-503` only)
 
 ```js
-const logger = ctx?.get?.('logger')      // ALWAYS undefined
+// BAD (as committed): no property fallback, so the warning never fires
+const logger = ctx?.get?.('logger')
 if (logger !== undefined && typeof logger?.warn === 'function') logger.warn(...)
+
+// CORRECT: match what tools.js already does
+const logger = serviceOf(ctx, 'logger')            // or: ctx?.logger
+if (typeof logger?.warn === 'function') logger.warn(...)
 ```
+
+Severity for this finding is therefore **low**, not high: it silences one warning on one fallback path, and the
+behaviour (inline roundtable) is still correct.
 
 ### R1.2 — the catch swallows *every* start failure, not just the missing-controller one
 
@@ -98,8 +115,11 @@ The patch cannot tell them apart. A typo'd `label` (never possible here — comp
 tool call for minutes instead of returning "too many jobs, kill one". The user asked for fire-and-forget and
 gets a multi-minute foreground hang with no explanation.
 
-The per-owner limit is the realistic case: `maxConcurrentJobsPerOwner` is a host setting (default small), and the
-roundtable path is background-by-default, so a user who fires several roundtables hits it routinely.
+The per-owner limit is the realistic case. Measured default: `DEFAULT_MAX_CONCURRENT_JOBS_PER_OWNER = 10`
+(`dsh-jobs-local/lib/index.js:340`), enforced at `:421-422`. Ten is not easily hit by one careful user, but a
+long-lived Session that starts roundtables (background **by default**) without collecting them reaches it, and
+after Fix 1 it no longer learns that it did. Correction to an earlier draft of this section: the default is 10,
+not "small", so this is a *latency* and *diagnosability* defect rather than a routine one.
 
 **BAD vs CORRECT**
 
@@ -302,16 +322,28 @@ test('a disabled CLI provider stays resolvable through the official subagent pat
 })
 ```
 
-### R2.5 — edge case the naive version gets wrong: detection failure is not unavailability
+### R2.5 — edge case the naive version gets wrong: "not installed" vs "installed but not configured"
 
-`detectAll()`'s own `catch` (`types.js:37-39`) maps a **thrown** `detect()` to `available: false`. But `zcode`
-throws nothing and returns a *reason string* ("未配置 commandTemplate") without an `available` field at all, so
-`...d` yields `available: undefined`. The naive `stateOf(id)?.available === true` then reports `false`
-correctly by luck — but the patch must not conflate the three states "not installed", "installed and broken",
-"not configured". The panel needs the `detail` string to distinguish them, and the report's own suggestion
-(`detail: stateOf(providerId)?.detail`) only works if `detail` is preserved for every branch.
+**Correction to an earlier draft.** I first wrote that `zcode.detect()` returns no `available` field. It does —
+checked against the source (`src/provider/zcode.js:36-47`):
 
----
+```js
+async function detect() {
+  if (config.enabled === false) return { available: false, detail: 'zcode 未启用…' }
+  if (!config.commandTemplate) return { available: false, detail: 'zcode 未配置 commandTemplate…' }
+  return { available: true, detail: 'template mode' }
+}
+```
+
+All three branches set `available`, and `detectAll()` spreads `...d` (`src/provider/types.js:35`), so
+`stateOf(id)?.available === true` is a correct predicate for every provider. This is **checked and clean**.
+
+The real edge case is different, and it survives: `zcode` reports `available: true` when a `commandTemplate` is
+merely *set* — the code's own comment says "有模板即视为可尝试；真实可用性取决于用户环境". So after Fix 2 the
+panel will show zcode green for a template that does not run. That is the same class of lie Fix 2 exists to
+remove, in the one provider that cannot probe itself. Fix 2 should either exclude template-mode zcode from the
+"available" claim, or present it as a third state (`configured`) rather than `available`. The `detail` carries
+enough text ("template mode") to render that honestly.
 
 ## FIX 3 — `resumeSessionId` guard before `startActivation` (committed)
 
@@ -1163,8 +1195,8 @@ builder, guard on the filtered list (not `history.length`), and keep `history` u
 |---|---|---|---|
 | R6.3 | committed semaphore leaks slots → `maxConcurrent` stops bounding after the first promotion | **critical** | present in committed code |
 | X4 | in-flight ledger lock never clears its map entry; duplicate sessions on concurrent import | **high** | uncommitted, in tree |
-| R1.1 | `serviceOf(ctx,'logger')` is dead — every degradation is silent, in both `tools.js` and `http.js` | **high** | committed |
-| R1.2 | catch swallows *all* `jobs.start()` failures, incl. per-owner capacity → multi-minute silent inline hang | **high** | committed |
+| R1.1 | `http.js:500` uses `ctx?.get('logger')` with no property fallback → that one warning is dead (`tools.js` is fine) | **low** | committed |
+| R1.2 | catch swallows *all* `jobs.start()` failures, incl. per-owner capacity (default 10) → silent inline hang | **medium** | committed |
 | R7.3 | naive Fix 7 makes a solo member debate an empty peer list | **high** | not yet written |
 | R6.1 | gating the whole roundtable deadlocks at `maxConcurrent: 1` | **high** | not yet written |
 | R2.3 | filtering `enabled:false` from `providerIds()` kills official dispatch for a disabled CLI wrapper | **medium** | not yet written |
@@ -1174,7 +1206,7 @@ builder, guard on the filtered list (not `history.length`), and keep `history` u
 | R6.2 | gate rejection is attributed to the *member* as a failure and drops it from later rounds | **medium** | not yet written |
 | R1.3 | `http.js` inline fallback reuses a dead, uncancellable controller | **medium** | committed |
 | R3.1 | removal of `activation.result.catch()` re-opens an unhandled-rejection window | **low** | committed |
-| R2.5 | detection failure is not the same as unavailability; `zcode` returns no `available` field | **low** | not yet written |
+| R2.5 | template-mode `zcode` reports `available: true` without ever running → one residual false green after Fix 2 | **low** | not yet written |
 | R3.3 | `hasResumeId` treats `0` and `"   "` as session ids | **low** | committed |
 | R5.4 / X1 | Fix 5 alone makes the self-debate look legitimate | **low** | ordering |
 | R7.4 | stale history entry is presented as "上一轮" when it is older | **low** | not yet written |
@@ -1199,3 +1231,111 @@ builder, guard on the filtered list (not `history.length`), and keep `history` u
   built prompt, so Fix 5/7 cannot corrupt the summary line.
 - **`zcode` `commandTemplate` guard** — refuses to dispatch unconfigured rather than running an empty shell
   string; unaffected by any of the seven.
+
+---
+
+## POST-REVIEW: what the Lead actually landed, re-verified
+
+The Lead implemented Fixes 5, 6, and 7 while this audit was being written. Every trap above was checked against
+the landed code, and the results changed the priority order. Suite at this point: **196 pass / 0 fail**.
+
+### Fixes 5 and 7 — landed correctly, all three traps avoided
+
+`src/roundtable.js:17-33` now reads:
+
+```js
+function buildDebatePrompt(basePrompt, round, history, selfId) {
+  const question = String(basePrompt)
+  if (round <= 1 || !history.length) return question
+  const peers = selfId === undefined ? history : history.filter((entry) => entry.provider !== selfId)
+  if (peers.length === 0) return question
+  …
+  return [question, '', '---', '', '【第' + round + '轮辩论】', '其他 agent 的上一轮发言：', peer, '', '请针对…'].join('\n')
+}
+```
+
+Against my own adversarial probes (`/tmp/verify-landed.mjs`):
+
+```
+A. round2 startsWith round1 ?            true      ← R5.1 prefix invariant holds
+A. round2 when solo === plain prompt ?   true      ← R7.3 empty-peer trap avoided
+B. a sees own 【a】 in round 2 ?          false     ← Fix 7 works
+B. a still sees 【b】 ?                   true      ← peers preserved
+B. participation per round :  [['a','b'], ['a','b'], ['a','b']]   ← R7.2 no participation loss
+B. b asked in round 3 ?                  true
+C. 原始问题 label gone ?                  true      ← R5.2 addressed
+C. question appears exactly once ?       true      ← no duplicate question
+```
+
+`history` is untouched (`src/roundtable.js:65-71` still writes it exactly as before), so R7.2's trap — filtering
+the shared array and losing members from round 3 — does not exist in the landed code. The `'---'` separator is a
+new element I had not proposed; it is harmless (still an append, so the prefix holds) and makes the concatenation
+visually unambiguous for the child agent.
+
+**R5.1 still stands as an action item**: `tests/roundtable.test.js:77` remains `assert.match(pA, /第2轮辩论/)`,
+which is position-independent. The property that now holds is not pinned by any test. The `startsWith` test from
+R5.1 should be added before this lands.
+
+### Fix 6 — landed with the recommended per-member gating, and it activates the drift bug
+
+`src/tools.js:438-446`:
+
+```js
+const gatedRegistry = {
+  list: () => roundtableRegistry.list(),
+  get(id) {
+    const backend = roundtableRegistry.get(id)
+    return { ...backend, dispatch: (request) => gate.run(request.signal, () => backend.dispatch(request)) }
+  },
+}
+```
+
+This is exactly recommendation **(a)** from R6.1: the roundtable itself holds no slot; each member acquires one.
+The `maxConcurrent: 1` deadlock I predicted **does not occur**, and the member-failure attribution problem (R6.2)
+is mitigated because the gate rejection happens inside `runRoundtable`'s per-member `try/catch`, which still
+reports it as a member failure — that part of R6.2 stands as a wording issue only.
+
+**But Fix 6 makes R6.3 (the semaphore drift) a live, user-visible defect.** Measured against the real committed
+`createSemaphore` body with the real roundtable access pattern (`/tmp/real-gate2.mjs`, 4 members, `maxConcurrent: 2`):
+
+```
+roundtable #1 (4 members, limit 2): peak = 2 ok
+roundtable #2 (4 members, limit 2): peak = 4 OVER LIMIT
+roundtable #3 (4 members, limit 2): peak = 4 OVER LIMIT
+```
+
+The **first** roundtable is bounded; the second runs at double the configured limit. This is not a rare race — it
+is the ordinary case of running two roundtables in one session, which the tool encourages (background by default,
+returning a job id). Root cause is unchanged and is one line: a queued entry is promoted by
+`queue.shift().begin()` without `active += 1`, while every `begin()` decrements `active` in its `.finally()`.
+
+Severity: **critical**, and now blocking for Fix 6. Landing Fix 6 without R6.3 means shipping a fix that silently
+stops working the second time it is used.
+
+### Fix 4 — the comment now claims more than the code does
+
+The landed comment (`src/tools.js:49-56`) says:
+
+```
+// The tool pipeline happens to refuse an aborted call before the body runs
+// (`dsh-tools` resolves ABORTED_BEFORE_DISPATCH first), so this guard is
+// redundant on the model-tool path — but the panel's HTTP handlers call
+// dispatch without any pipeline in front of them, and a signal can also be
+// aborted between admission and the gate.
+```
+
+This is accurate and better reasoned than my R4.1 — it correctly identifies the framework gate
+(`callerCancelled`, `tools/src/index.ts:1506`) and the panel path as the real justification. Two corrections:
+
+1. It omits the *deadline wrapper* case, which is the one path where the guard is not redundant **on the model-tool
+   path** (`packages/guard/timeout-policy/src/index.ts:62-66` replaces `exec.signal` with a derived deadline after
+   `callerCancelled` already passed). Worth one clause, because it is the only reason the guard protects model
+   calls at all.
+2. R4.3 still stands: the rejection is a plain `Error`, not the framework's `AbortError` /
+   `TOOL_ABORTED_BEFORE_DISPATCH` shape, so a user cancellation is recorded as a failure.
+
+### Fix 2 — still not started
+
+`src/backend.js` still returns `available: true` unconditionally for every registered provider, and the panel still
+shows four green rows on a machine where `detectAll()` reports all four unavailable. R2.1–R2.5 and the caching
+design all still apply unchanged.

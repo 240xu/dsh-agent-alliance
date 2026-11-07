@@ -61,15 +61,44 @@ export function makeZcodeProvider({ deps = {}, config = {}, openDb } = {}) {
     return { text, externalSessionId: undefined, raw: r }
   }
 
+  /**
+   * Open the read-only session database for one operation.
+   *
+   * The handle must be closed by the caller: `node:sqlite` keeps the descriptor
+   * open until the object is collected, and GC is not driven by this workload,
+   * so leaking one handle per read exhausts the process descriptor budget. Use
+   * {@link withDb}.
+   * @returns {Promise<object>} an open database handle
+   */
   async function db() {
     if (open) return open()
     const { DatabaseSync } = await import('node:sqlite')
     return new DatabaseSync(paths.dbPath, { readOnly: true })
   }
 
+  /**
+   * Run one read against the session database, closing the handle afterwards.
+   *
+   * An injected `open` is owned by the caller and is left open; only handles
+   * this module opened are closed here.
+   * @template T
+   * @param {(database: object) => T} run read to perform while the handle is open
+   * @returns {Promise<T>} the read result
+   */
+  async function withDb(run) {
+    const database = await db()
+    try {
+      return await run(database)
+    } finally {
+      if (!open && typeof database?.close === 'function') {
+        try { database.close() } catch { /* already closed by the driver */ }
+      }
+    }
+  }
+
   async function listSessions({ query, limit = 20 } = {}) {
     try {
-      const d = await db()
+      return await withDb((d) => {
       let rows
       try {
         rows = d.prepare('SELECT id, directory, title, time_created FROM session ORDER BY time_created DESC LIMIT ?').all(limit * 4)
@@ -86,69 +115,70 @@ export function makeZcodeProvider({ deps = {}, config = {}, openDb } = {}) {
       }))
       if (query) out = out.filter(s => (s.title || '').includes(query) || (s.cwd || '').includes(query) || s.id.includes(query))
       return out.slice(0, limit)
+      })
     } catch (err) {
       throw new Error('zcode listSessions 失败（未安装或 schema 变更）: ' + String(err?.message || err))
     }
   }
 
   async function readSession(id, { maxChars = 8000 } = {}) {
-    const d = await db()
-    const sess = d.prepare('SELECT id, title FROM session WHERE id = ?').get(id)
-    if (!sess) throw new Error('zcode session not found: ' + id)
-    const rows = d.prepare(
-      `SELECT m.data AS mdata, p.data AS pdata
-       FROM part p JOIN message m ON m.id = p.message_id
-       WHERE p.session_id = ?
-       ORDER BY p.time_created ASC`
-    ).all(id)
-    const messages = []
-    for (const row of rows) {
-      let pdata, mdata
-      try { pdata = JSON.parse(row.pdata); mdata = JSON.parse(row.mdata || '{}') } catch { continue }
-      // compaction part 类型是压缩摘要，跳过正文抽取
-      if (pdata?.type === 'text' && typeof pdata.text === 'string' && pdata.text.trim()) {
-        messages.push({ role: mdata.role === 'assistant' ? 'assistant' : 'user', text: pdata.text })
+    return withDb((d) => {
+      const sess = d.prepare('SELECT id, title FROM session WHERE id = ?').get(id)
+      if (!sess) throw new Error('zcode session not found: ' + id)
+      const rows = d.prepare(
+        `SELECT m.data AS mdata, p.data AS pdata
+         FROM part p JOIN message m ON m.id = p.message_id
+         WHERE p.session_id = ?
+         ORDER BY p.time_created ASC`
+      ).all(id)
+      const messages = []
+      for (const row of rows) {
+        let pdata, mdata
+        try { pdata = JSON.parse(row.pdata); mdata = JSON.parse(row.mdata || '{}') } catch { continue }
+        // compaction part 类型是压缩摘要，跳过正文抽取
+        if (pdata?.type === 'text' && typeof pdata.text === 'string' && pdata.text.trim()) {
+          messages.push({ role: mdata.role === 'assistant' ? 'assistant' : 'user', text: pdata.text })
+        }
       }
-    }
-    let total = 0
-    const capped = []
-    for (const m of messages) {
-      if (total >= maxChars) break
-      const t = m.text.slice(0, maxChars - total)
-      capped.push({ role: m.role, text: t })
-      total += t.length
-    }
-    return { title: sess.title ?? undefined, messages: capped }
+      let total = 0
+      const capped = []
+      for (const m of messages) {
+        if (total >= maxChars) break
+        const t = m.text.slice(0, maxChars - total)
+        capped.push({ role: m.role, text: t })
+        total += t.length
+      }
+      return { title: sess.title ?? undefined, messages: capped }
+    })
   }
-
   // 完整导出（导入器用）；compaction part 跳过
   async function exportSession(id) {
-    const d = await db()
-    const sess = d.prepare('SELECT id, title, directory, time_created FROM session WHERE id = ?').get(id)
-    if (!sess) throw new Error('zcode session not found: ' + id)
-    const rows = d.prepare(
-      `SELECT m.data AS mdata, p.data AS pdata
-       FROM part p JOIN message m ON m.id = p.message_id
-       WHERE p.session_id = ? ORDER BY p.time_created ASC`
-    ).all(id)
-    const turns = []
-    let cur = null
-    for (const row of rows) {
-      let pdata, mdata
-      try { pdata = JSON.parse(row.pdata); mdata = JSON.parse(row.mdata || '{}') } catch { continue }
-      if (pdata?.type === 'compaction') continue
-      if (pdata?.type !== 'text' || typeof pdata.text !== 'string' || !pdata.text.trim()) continue
-      if (mdata.role === 'assistant') {
-        if (!cur) { cur = { user: undefined, assistant: undefined, tools: [] }; turns.push(cur) }
-        cur.assistant = (cur.assistant ? cur.assistant + '\n' : '') + pdata.text
-      } else {
-        cur = { user: pdata.text, assistant: undefined, tools: [] }
-        turns.push(cur)
+    return withDb((d) => {
+      const sess = d.prepare('SELECT id, title, directory, time_created FROM session WHERE id = ?').get(id)
+      if (!sess) throw new Error('zcode session not found: ' + id)
+      const rows = d.prepare(
+        `SELECT m.data AS mdata, p.data AS pdata
+         FROM part p JOIN message m ON m.id = p.message_id
+         WHERE p.session_id = ? ORDER BY p.time_created ASC`
+      ).all(id)
+      const turns = []
+      let cur = null
+      for (const row of rows) {
+        let pdata, mdata
+        try { pdata = JSON.parse(row.pdata); mdata = JSON.parse(row.mdata || '{}') } catch { continue }
+        if (pdata?.type === 'compaction') continue
+        if (pdata?.type !== 'text' || typeof pdata.text !== 'string' || !pdata.text.trim()) continue
+        if (mdata.role === 'assistant') {
+          if (!cur) { cur = { user: undefined, assistant: undefined, tools: [] }; turns.push(cur) }
+          cur.assistant = (cur.assistant ? cur.assistant + '\n' : '') + pdata.text
+        } else {
+          cur = { user: pdata.text, assistant: undefined, tools: [] }
+          turns.push(cur)
+        }
       }
-    }
-    return { title: sess.title ?? undefined, createdAt: sess.time_created ?? null, cwd: sess.directory ?? undefined, turns }
+      return { title: sess.title ?? undefined, createdAt: sess.time_created ?? null, cwd: sess.directory ?? undefined, turns }
+    })
   }
-
   return defineProvider({
     id: 'zcode',
     label: 'ZCode (z.ai)',

@@ -124,3 +124,32 @@ test('显式 model 覆盖配置默认', async () => {
   const argv = fr.calls[0].argv
   assert.equal(argv[argv.indexOf('-m') + 1], 'go/manual')
 })
+
+test('repeated session reads close their database handle', async () => {
+  // node:sqlite keeps a descriptor until the handle is collected, and GC is not
+  // driven by this workload. Leaking one per read exhausts the process budget
+  // and the provider then fails outright instead of degrading.
+  const { DatabaseSync } = await import('node:sqlite')
+  const { mkdtempSync, readdirSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+
+  const dbPath = join(mkdtempSync(join(tmpdir(), 'opencode-fd-')), 'opencode.db')
+  const seed = new DatabaseSync(dbPath)
+  seed.exec('CREATE TABLE session (id TEXT, title TEXT, directory TEXT, time_created INTEGER, time_updated INTEGER)')
+  seed.exec('CREATE TABLE message (id TEXT, time_created INTEGER, data TEXT)')
+  seed.exec('CREATE TABLE part (id TEXT, message_id TEXT, session_id TEXT, time_created INTEGER, data TEXT)')
+  for (let i = 0; i < 5; i += 1) seed.prepare('INSERT INTO session VALUES (?,?,?,?,?)').run('s' + i, 'T' + i, '/tmp', i, i)
+  seed.close()
+
+  const { makeOpencodeProvider } = await import('../src/provider/opencode.js')
+  const provider = makeOpencodeProvider({ config: {}, deps: { paths: { dbPath, opencodeBin: '/bin/true' } } })
+
+  const descriptors = () => readdirSync('/proc/self/fd').length
+  await provider.listSessions({ limit: 1 }) // warm the lazy sqlite import
+  const before = descriptors()
+  for (let i = 0; i < 30; i += 1) await provider.listSessions({ limit: 5 })
+  const after = descriptors()
+  // Allow a small margin for unrelated runtime descriptors.
+  assert.ok(after - before <= 2, `descriptor count grew by ${after - before} over 30 reads`)
+})

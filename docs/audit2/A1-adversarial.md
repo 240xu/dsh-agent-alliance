@@ -381,7 +381,59 @@ A/B/C 都只是"某个功能不好用"，N1 是**正确性 + 资源 + 隔离**�
 
 ---
 
-## 附：我尝试驳回但失败的其它候选（记录负面结果，避免重复劳动）
+## N2 — `runner.js` 的超时/取消只 kill 直接子进程，且只监听 `close`
+
+**严重度：high**（原报告 `01-bugs.md:169` 明确把这一项标为 ✅ CLEAN，判断错误）
+
+**严重度：high**（静默数据损坏：模型发出去的 prompt 与目标 agent 收到的不一致，且会泄漏模板自身文本）
+
+`src/provider/zcode.js:29-34`：
+```js
+function expandTemplate(tpl, { prompt, resumeSessionId, cwd }) {
+  return tpl
+    .replaceAll('{prompt}', shellQuote(prompt))
+    .replaceAll('{session}', resumeSessionId ? shellQuote(resumeSessionId) : '')
+    .replaceAll('{cwd}', shellQuote(cwd || '.'))
+}
+```
+
+`String.prototype.replaceAll` 的**第二个参数**（替换字符串）支持 `$&`、`` $` ``、`$'`、`$$`、`$1`
+等特殊模式。`shellQuote` 返回的是 `'...'` 形式的字符串，**其中的 `$` 没有被转义**，
+于是用户 prompt 里的 `$&` / `` $` `` / `$'` / `$$` 会被 `replaceAll` 当成 pattern 解释。
+
+实测（`/tmp/zc.mjs`，模板 `zcode run -p {prompt} --yes`）：
+
+```
+prompt  : "fix the $& backreference in my regex"
+received: "fix the {prompt} backreference in my regex"          <<< 字面量 {prompt} 被插回来
+
+prompt  : "explain $$ in Makefiles"
+received: "explain $ in Makefiles"                              <<< 少了一个 $
+
+prompt  : "what does $' mean in bash"
+received: "what does  --yes\'' mean in bash"                    <<< 模板尾部 "--yes" 被复制进 prompt
+```
+
+第三种最恶劣：`` $' `` 的语义是"匹配位置之后的整段字符串"，所以 `replaceAll` 把**模板中
+`{prompt}` 之后的所有内容**（这里是 ` --yes`）复制进了 prompt 内部。
+任何讨论正则替换、Makefile、bash 引号的提问（都是常见的编码任务）都会命中。
+
+**为什么不是 RCE**：我专门做了注入尝试 —— 用 `$'`、`` $` ``、`$&`、`$$` 作 payload，
+配 8 种模板 + 真跑 `sh -c` 检查 marker 文件是否被创建（`/tmp/aa_fuzz.mjs`），
+**0 命中**。原因是 `replaceAll` 破坏文本后，payload 仍落在单引号内，`sh` 只把它当字面量。
+所以这是**内容损坏**，不是命令注入 —— 但仍然严重：它让插件在**无声中改变了用户发给外部 agent 的指令**。
+
+**修复（1 行 × 3）**：用函数形式的替换，避免 pattern 解释：
+```js
+.replaceAll('{prompt}', () => shellQuote(prompt))
+.replaceAll('{session}', () => (resumeSessionId ? shellQuote(resumeSessionId) : ''))
+.replaceAll('{cwd}', () => shellQuote(cwd || '.'))
+```
+
+**为什么前一轮漏掉**：`01-bugs.md` 的 F3 只按"`catch {}` 是否掩盖故障"分类，
+`02-framework.md`/`03-official-subagents.md` 没有检查 `replaceAll` 的替换字符串语义；
+`tests/provider-zcode.test.js:33-40` 的注入测试只用了**单引号** payload
+（`"x'; rm -rf /; echo '"`），恰好是 `replaceAll` 不会特殊处理的形式，所以测试全绿。
 
 | 我怀疑的缺陷 | 尝试的证伪方式 | 结果 |
 |---|---|---|
@@ -390,29 +442,60 @@ A/B/C 都只是"某个功能不好用"，N1 是**正确性 + 资源 + 隔离**�
 | **`runner.js` 子进程在 abort/timeout 后未真正回收** | 真实 `spawnCli` + `sh -c` 带孙进程占住 stdout 管道 | **成立且严重，但属新缺陷线（见下）**。 |
 | **`/state` 的 `available` 其实有 detect** | grep 全部调用点 | 失败，确认为谎报（Claim B） |
 
-### 附带发现（未纳入 N1，但值得记录）
+### 附带发现 N2 — `runner.js` 的超时/取消只 kill 直接子进程，且只监听 `close`
 
-`src/runner.js` 的 `settle` 只监听 `close`，而 `close` 要等**所有继承 stdout 管道的进程**退出。
-`zcode` 走 `sh -c`（`src/provider/zcode.js:55`），CLI 自己再 fork 子进程时，`SIGKILL` 打在 `sh`
-上、`sh` 死了，**孙进程仍持有 stdout 管道**，`close` 永不触发：
+**严重度：high**（原报告 `01-bugs.md:169` 明确把这一项标为 ✅ CLEAN，判断错误）
+
+`src/runner.js:74` 只在 `close` 上结算：
+```js
+child.on('close', (code) => settle(code === null ? -1 : code))
+```
+而 Node 的 `close` 事件要等**子进程的 stdio 流全部关闭**。`sh -c` 自己再 fork 的子进程会继承
+stdout/stderr 管道；`SIGKILL` 只打中 `sh`，孙进程仍持有管道 ⇒ `close` 迟迟不来。
+
+实测（`/tmp/verify_kill.mjs`，直接对比 `exit` 与 `close`）：
 
 ```
-// /tmp/aa_runner_orphan.mjs，timeoutMs: 400
-timeout-only: STILL PENDING at 4000ms          ← 10× 超时后仍未 settle
-sleep survivors: 164289 sleep 30, ...          ← 孙进程活着
+[sh -c sleep 3]  exit  at 308ms  sig=SIGKILL     ← 进程确实死了
+[sh -c sleep 3]  close at 3012ms                 ← 但 close 晚了 2.7 秒
 ```
 
-后果是 `spawnCli` 的 promise **永不 settle**，占着 `createSemaphore` 的槽位。我实测把
-`maxConcurrent: 2` 的两个槽全部占死后，**第三个任务永远卡在队列里**：
+于是 `spawnCli` 的 promise **在超时后仍然挂着**：
 
 ```
-// /tmp/aa_wedge.mjs
+// /tmp/verify_runner3.mjs，timeoutMs: 300
+spawnCli returned after 3013 ms; timedOut= true    ← 10× 超时
+
+// /tmp/verify_forever.mjs，timeoutMs: 200，孙进程是长驻 daemon
+STILL PENDING after 8s (timeout was 200ms)
+surviving sleep 600: 3                              ← 孙进程存活
+```
+
+**真实触发路径**：`zcode` 是唯一走 `sh -c` 的 provider（`src/provider/zcode.js:55`
+`argv: ['sh', '-c', script]`），而它的模板正是用户自由填写的任意命令
+（`config.commandTemplate`，可能拉起 `zcode ...` 这类会自行 fork 的 CLI）。
+CLI 若留下长驻子进程（daemon、语言服务器、`npm exec` 包装器），**一次 `dispatch` 的 promise
+就永不 settle**。
+
+**后果**：该 promise 占着 `createSemaphore` 的槽位不放。`maxConcurrent` 默认 3，我实测把槽占满后
+第三个任务永远排队：
+
+```
+// /tmp/aa_wedge.mjs（maxConcurrent: 2，两个 dispatch 卡在 runner 里）
 THIRD IS STUCK IN QUEUE (limit exhausted)
 ```
+并且 `tools.js` 的 `dispatchForeground` 会 `await` 这个 promise，所以**前台 `agent_dispatch`
+也会永久挂起**，直到整个回合被外部取消。
 
-⇒ 这是一个独立的 high 缺陷（原报告 `01-bugs.md:169` 明确把"子进程 abort 回收"标为 ✅ CLEAN，
-**判断错误**：它只验证了 `child.kill()` 被调用，没验证 promise 是否 settle）。修法：监听 `exit`
-而非仅 `close`，并在 settle 后 `child.stdout.destroy()` / `child.stderr.destroy()`；
-或 spawn 时用 `detached: true` + 进程组 kill（`process.kill(-child.pid, 'SIGKILL')`）。
+**修复（2 行）**：
+```js
+// 结算挂在 exit 上，并在结算时主动销毁管道，不等孙进程退出
+child.on('exit', (code) => { child.stdout.destroy(); child.stderr.destroy(); settle(code === null ? -1 : code) })
+```
+更彻底的做法是 spawn 时加 `detached: true`，超时/abort 时用 `process.kill(-child.pid, 'SIGKILL')`
+杀掉整个进程组。
+
+**为什么前一轮判错了**：`01-bugs.md:169` 的验证方法是"`onAbort` 里调用了 `child.kill('SIGKILL')`"——
+它只证明了 **kill 被调用**，没有证明 **promise 会 settle**。这两件事在存在孙进程时分开了。
 
 探针脚本均写在 `/tmp` 且已删除；仓库源码零改动。

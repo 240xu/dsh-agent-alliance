@@ -59,6 +59,15 @@ export function makeOpencodeProvider({ deps = {}, config = {} } = {}) {
     return { text: parsed.text, externalSessionId: parsed.sessionId, raw: r }
   }
 
+  /**
+   * Open the read-only session database for one operation.
+   *
+   * The handle must be closed by the caller: `node:sqlite` keeps the descriptor
+   * open until the object is collected, and GC is not driven by this workload,
+   * so leaking one handle per read exhausts the process descriptor budget and
+   * the provider then fails outright instead of degrading. Use {@link withDb}.
+   * @returns {Promise<object>} an open database handle
+   */
   async function db() {
     if (openDb) return openDb()
     // 生产路径：node:sqlite 只读打开（node >=22.5）；ESM 下用动态 import
@@ -66,9 +75,30 @@ export function makeOpencodeProvider({ deps = {}, config = {} } = {}) {
     return new DatabaseSync(paths.dbPath, { readOnly: true })
   }
 
+  /**
+   * Run one read against the session database, closing the handle afterwards.
+   *
+   * An injected `openDb` is owned by the caller and is left open; only handles
+   * this module opened are closed here.
+   * @template T
+   * @param {(database: object) => T} run read to perform while the handle is open
+   * @returns {Promise<T>} the read result
+   */
+  async function withDb(run) {
+    const database = await db()
+    try {
+      return await run(database)
+    } finally {
+      // `openDb` injection is test-owned; closing it would break the caller.
+      if (!openDb && typeof database?.close === 'function') {
+        try { database.close() } catch { /* already closed by the driver */ }
+      }
+    }
+  }
+
   async function listSessions({ query, limit = 20 } = {}) {
     try {
-      const d = await db()
+      return await withDb((d) => {
       const rows = d.prepare(
         'SELECT id, title, directory, time_created FROM session ORDER BY time_updated DESC LIMIT ?'
       ).all(Math.max(limit * 4, 100))
@@ -83,64 +113,65 @@ export function makeOpencodeProvider({ deps = {}, config = {} } = {}) {
         out = out.filter(s => (s.title || '').includes(query) || (s.cwd || '').includes(query) || s.id.includes(query))
       }
       return out.slice(0, limit)
+      })
     } catch (err) {
       throw new Error('opencode listSessions 失败: ' + String(err?.message || err))
     }
   }
 
   async function readSession(id, { maxChars = 8000 } = {}) {
-    const d = await db()
-    const sess = d.prepare('SELECT id, title FROM session WHERE id = ?').get(id)
-    if (!sess) throw new Error('opencode session not found: ' + id)
-    const rows = d.prepare(
-      `SELECT m.data AS mdata, p.data AS pdata
-       FROM part p JOIN message m ON m.id = p.message_id
-       WHERE p.session_id = ?
-       ORDER BY p.time_created ASC`
-    ).all(id)
-    const messages = []
-    for (const row of rows) {
-      let pdata, mdata
-      try { pdata = JSON.parse(row.pdata); mdata = JSON.parse(row.mdata || '{}') } catch { continue }
-      if (pdata?.type === 'text' && typeof pdata.text === 'string' && pdata.text.trim()) {
-        messages.push({ role: mdata.role === 'assistant' ? 'assistant' : 'user', text: pdata.text })
+    return withDb((d) => {
+      const sess = d.prepare('SELECT id, title FROM session WHERE id = ?').get(id)
+      if (!sess) throw new Error('opencode session not found: ' + id)
+      const rows = d.prepare(
+        `SELECT m.data AS mdata, p.data AS pdata
+         FROM part p JOIN message m ON m.id = p.message_id
+         WHERE p.session_id = ?
+         ORDER BY p.time_created ASC`
+      ).all(id)
+      const messages = []
+      for (const row of rows) {
+        let pdata, mdata
+        try { pdata = JSON.parse(row.pdata); mdata = JSON.parse(row.mdata || '{}') } catch { continue }
+        if (pdata?.type === 'text' && typeof pdata.text === 'string' && pdata.text.trim()) {
+          messages.push({ role: mdata.role === 'assistant' ? 'assistant' : 'user', text: pdata.text })
+        }
       }
-    }
-    let total = 0
-    const capped = []
-    for (const m of messages) {
-      if (total >= maxChars) break
-      const t = m.text.slice(0, maxChars - total)
-      capped.push({ role: m.role, text: t })
-      total += t.length
-    }
-    return { title: sess.title ?? undefined, messages: capped }
+      let total = 0
+      const capped = []
+      for (const m of messages) {
+        if (total >= maxChars) break
+        const t = m.text.slice(0, maxChars - total)
+        capped.push({ role: m.role, text: t })
+        total += t.length
+      }
+      return { title: sess.title ?? undefined, messages: capped }
+    })
   }
-
   // 完整导出（导入器用）：按 message 时间分组为 turns
   async function exportSession(id) {
-    const d = await db()
-    const sess = d.prepare('SELECT id, title, directory, time_created FROM session WHERE id = ?').get(id)
-    if (!sess) throw new Error('opencode session not found: ' + id)
-    const rows = d.prepare(
-      `SELECT m.id AS mid, m.time_created AS mt, m.data AS mdata, p.data AS pdata
-       FROM part p JOIN message m ON m.id = p.message_id
-       WHERE p.session_id = ? ORDER BY p.time_created ASC`
-    ).all(id)
-    const turns = []
-    let cur = null
-    for (const row of rows) {
-      let pdata, mdata
-      try { pdata = JSON.parse(row.pdata); mdata = JSON.parse(row.mdata || '{}') } catch { continue }
-      if (pdata?.type === 'tool' && typeof pdata.tool === 'string') {
-        // 工具部件：映射进当前轮的 tools（无轮则先开一轮占位）
-        if (!cur) { cur = { user: undefined, assistant: undefined, tools: [] }; turns.push(cur) }
-        const st = pdata.state || {}
-        cur.tools.push({
-          name: pdata.tool,
-          args: st.input ?? {},
-          resultText: typeof st.output === 'string' ? st.output : String(st.error ?? ''),
-          isError: st.status === 'error',
+    return withDb((d) => {
+      const sess = d.prepare('SELECT id, title, directory, time_created FROM session WHERE id = ?').get(id)
+      if (!sess) throw new Error('opencode session not found: ' + id)
+      const rows = d.prepare(
+        `SELECT m.id AS mid, m.time_created AS mt, m.data AS mdata, p.data AS pdata
+         FROM part p JOIN message m ON m.id = p.message_id
+         WHERE p.session_id = ? ORDER BY p.time_created ASC`
+      ).all(id)
+      const turns = []
+      let cur = null
+      for (const row of rows) {
+        let pdata, mdata
+        try { pdata = JSON.parse(row.pdata); mdata = JSON.parse(row.mdata || '{}') } catch { continue }
+        if (pdata?.type === 'tool' && typeof pdata.tool === 'string') {
+          // 工具部件：映射进当前轮的 tools（无轮则先开一轮占位）
+          if (!cur) { cur = { user: undefined, assistant: undefined, tools: [] }; turns.push(cur) }
+          const st = pdata.state || {}
+          cur.tools.push({
+            name: pdata.tool,
+            args: st.input ?? {},
+            resultText: typeof st.output === 'string' ? st.output : String(st.error ?? ''),
+            isError: st.status === 'error',
         })
         continue
       }
@@ -154,8 +185,8 @@ export function makeOpencodeProvider({ deps = {}, config = {} } = {}) {
       }
     }
     return { title: sess.title ?? undefined, createdAt: sess.time_created ?? null, cwd: sess.directory ?? undefined, turns }
+    })
   }
-
   return defineProvider({
     id: 'opencode',
     label: 'OpenCode',
