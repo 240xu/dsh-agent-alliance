@@ -522,3 +522,48 @@ test('a capacity refusal is not silently converted into inline execution', async
     'a capacity refusal must surface instead of degrading to inline execution',
   )
 })
+
+test('the concurrency limit holds across repeated batches, not just the first', async () => {
+  // A promoted queue entry used to skip the slot increment while every
+  // completion decremented it, so `active` drifted below the real in-flight
+  // count. Saturate the gate with an initial batch so entries actually queue,
+  // then send a second batch: a broken counter lets it run at double the limit.
+  const { registerTools } = await import('../src/tools.js')
+  const tools = []
+  const ctx = { tools: { register: (def) => { tools.push(def); return () => {} } } }
+  let active = 0
+  let peak = 0
+  const backend = {
+    id: 'p1',
+    kind: 'cli',
+    available: true,
+    async dispatch() {
+      active += 1
+      peak = Math.max(peak, active)
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      active -= 1
+      return { text: 'ok', backend: 'cli' }
+    },
+  }
+  registerTools(ctx, {
+    resolver: { resolve: () => backend, list: () => [{ id: 'p1', label: 'P1', kind: 'cli', available: true }] },
+    registry: { list: () => [{ id: 'p1', label: 'P1' }], get: () => ({}) },
+    config: { providers: {}, defaults: { timeoutMs: 5000, maxConcurrent: 2, defaultCwd: '' } },
+    home: '/tmp',
+  })
+  const dispatch = tools.find((t) => t.name === 'agent_dispatch')
+  const call = (prompt) => dispatch.execute(
+    { provider: 'p1', prompt },
+    { signal: new AbortController().signal, agent: undefined },
+  )
+
+  // Six concurrent foreground dispatches against maxConcurrent = 2: four queue.
+  peak = 0
+  await Promise.all(Array.from({ length: 6 }, (_, i) => call('a' + i)))
+  assert.ok(peak <= 2, `first batch reached ${peak}, above the limit of 2`)
+
+  // The second batch must still be bounded; a drifted counter doubles it.
+  peak = 0
+  await Promise.all(Array.from({ length: 6 }, (_, i) => call('b' + i)))
+  assert.ok(peak <= 2, `second batch reached ${peak}, above the limit of 2`)
+})

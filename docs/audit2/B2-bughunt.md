@@ -41,7 +41,10 @@ await app.plugin({ name: 'fake-web-server', apply(ctx) {
 
 ## Findings
 
-*(appended one at a time as each probe completes)*
+Appended incrementally as each probe completed. Note that the working tree changed
+under this audit (commits `446a5f9` and `f6eaf59` landed mid-run); every finding below
+states which tree state it was measured against, and the F3/F4/F7 addenda re-measure
+against the current tree.
 
 ### F1 — Effect ownership across 3× mount/dispose/remount: **CLEAN** (no finding)
 
@@ -244,6 +247,87 @@ read-only, short-lived queries here. Note `openDb` (the test injection) must the
 a closeable object; the existing tests inject a stub with only `prepare`, so the stub
 needs a no-op `close` or the injection contract needs to keep skipping the close.
 
+### F3 addendum — the fix must close *only* handles this module opened
+
+A naive `finally { db.close() }` around the query bodies breaks the existing provider
+tests, because `openDb` (the test injection) returns the **same shared handle** on every
+call, and those tests call `listSessions` then `readSession` on it:
+
+```bash
+cd /tmp/b2 && timeout 30 node repro4f-injection.mjs
+```
+
+```
+first use: [ [Object: null prototype] { id: 's1' } ]
+second use THREW: database is not open -> shared-stub tests would break
+```
+
+`tests/provider-opencode.test.js:19-30` (`memDb()`) and
+`tests/provider-zcode.test.js:42-58` both use that pattern. So the fix has to keep
+ownership explicit:
+
+```js
+async function withReadDb(fn) {
+  if (openDb) return fn(await openDb())          // injection owns the handle
+  const { DatabaseSync } = await import('node:sqlite')
+  const db = new DatabaseSync(paths.dbPath, { readOnly: true })
+  try { return await fn(db) } finally { db.close() }
+}
+```
+
+i.e. close only the handle this module created. That keeps the injection contract
+unchanged (a stub can still share one in-memory DB) while removing the production leak.
+
+### F3 addendum 2 — SUPERSEDED: an intermediate fix was incomplete (`listSessions` still leaked)
+
+> **Superseded.** This section records a snapshot of the working tree taken while another
+> teammate's fix was landing. That fix has since been completed; see
+> "Post-fix re-measurement" for the current result. Kept because it documents the exact
+> failure mode to re-check if the providers are edited again (the busy path is
+> `listSessions`, not the rare paths).
+
+The working tree now converts `readSession` and `exportSession` to a `withDb(...)` helper
+in both providers, but leaves `listSessions` on the old direct `await db()` path
+(`src/provider/opencode.js:99-101`, `src/provider/zcode.js:99-101`). Measured per entry point
+against the current working tree:
+
+```bash
+cd /tmp/b2 && timeout 90 node repro13-partial-fix.mjs
+```
+
+```
+opencode.listSessions              20 calls ->  20 descriptors LEAK
+opencode.readSession               20 calls ->   0 descriptors closed
+opencode.exportSession             20 calls ->   0 descriptors closed
+zcode.listSessions                 20 calls ->  20 descriptors LEAK
+zcode.readSession               20 calls ->   0 descriptors closed
+zcode.exportSession               20 calls ->   0 descriptors closed
+```
+
+(The zcode line printed `-20` once because the opencode leak had not yet been collected;
+the steady state is one descriptor per `listSessions` call for both providers.)
+
+**Why this matters more than the other two entry points:** `listSessions` is the only
+one the panel calls on a timer — `/sessions` calls it for **every** configured provider
+on every refresh, and the client-side `LIST_POLL_MS` is 2500 ms. Leaving the busy path
+leaking while fixing the rare paths leaves the practical defect in place.
+
+**Required change** — `listSessions` must use the same helper, which also means moving
+its `try/catch` inside the callback so the handle closes on the error path:
+
+```js
+async function listSessions({ query, limit = 20 } = {}) {
+  return withDb((d) => {
+    try { … } catch (err) { throw new Error('opencode listSessions 失败: ' + …) }
+  })
+}
+```
+
+Note the current `withDb` bodies are *not* reindented (the diff wraps existing statements
+in `(d) => {` without touching indentation). That is cosmetic, but it makes the
+`try/finally` easy to mis-scope on the next edit; reindenting while adding `listSessions`
+is worth doing in the same change.
+
 ### F4 (medium) — a killed job that never settles holds its owner slot forever, and later background calls **silently become blocking inline calls**
 
 `src/tools.js:184-194` (`jobHooks`) hands the job substrate a `done` promise derived
@@ -332,6 +416,46 @@ no-op (`killJob` returns early for any non-terminal status only after re-invokin
 `job <id> is still stopping; kill it and wait for settlement before removing it`.
 The record is therefore unreachable for cleanup and permanently occupies one slot of
 `maxConcurrentJobsPerOwner`.
+
+### F4 addendum — current working tree: half of F4 is already fixed; the permanent slot pin is **not**
+
+`startJob` (`src/tools.js:153-171`) now rethrows every refusal except the
+missing-controller case, so half 2 of F4 is fixed in the working tree — a "background
+job limit reached" is no longer silently converted into a blocking inline call:
+
+```bash
+cd /tmp/b2 && timeout 40 node repro5-degrade.mjs
+```
+
+```
+1) first background job: agent-alliance-210775843e7547ce
+   kill outcome: requested
+   status 300ms after kill: stopping
+   producer never settled because dispatch() ignores the abort signal
+2) second background:true call -> REJECTED: background job limit reached for this owner (limit: 1); use job_kill to stop an unneeded j
+   elapsed: 1 ms; backend dispatch count: 1
+3) plugin-warned about the fallback? false
+```
+
+Half 1 is **unchanged**: `jobHooks().done` (`src/tools.js:184-194`) is still
+`Promise.resolve(produced).then(...)` with no cancellation race, so a producer that
+ignores `signal` keeps the record in `stopping` indefinitely:
+
+```bash
+cd /tmp/b2 && timeout 40 node repro5d-hang.mjs
+```
+
+```
+after +2000ms -> status=stopping finishedAt=undefined
+after +4000ms -> status=stopping finishedAt=undefined
+still listed by jobs.list(undefined): true
+kill again returns: requested
+```
+
+Consequence in the current tree: the slot is pinned and every later *background* call
+now **fails loudly** instead of degrading (better), but the leaked record cannot be
+removed (`remove()` refuses non-terminal jobs) and the owner's background capacity is
+permanently reduced until process exit. The `Promise.race` fix above is still required.
 
 ### F5 (low) — an in-flight HTTP dispatch is not cancelled by plugin disposal; it keeps running and answers normally
 
@@ -433,7 +557,7 @@ returns nothing.
 ### F7 (low) — panel jobs are unowned and survive plugin disposal; reload can exhaust the shared job bucket and the panel then blocks
 
 By design the panel starts **unowned** jobs (`ctx.jobs.start({ kind, label, run })` with
-no `owner`, `src/http.js:...`). Unowned jobs are not tied to a session, so *nothing
+no `owner`, `src/http.js:477-495`). Unowned jobs are not tied to a session, so *nothing
 stops them when the plugin fiber is disposed* — not the route disposer, not a session
 teardown. In a long-lived host (or during an HMR loop) each reload can add another
 running job to the one shared "unowned" bucket, whose cap defaults to 10.
@@ -488,55 +612,25 @@ roundtables quickly hits it — so the fallback should not be silent either way.
 
 ---
 
-## Consolidated reproduction
+### F7 addendum — verified on the current tree: still present
 
-Every headline claim above runs from one command against the shipped modules:
+`src/http.js` still falls back to inline when `jobs.start` throws
+(`http.js:449-457`), and the panel's roundtable path has *no* `background` flag to
+distinguish "user wanted a job" from "no jobs service". So an exhausted bucket still
+produces `{ ok: true, jobId: null, text }` and a stalled POST:
 
 ```bash
-cd /tmp/b2 && timeout 120 node repro10-summary.mjs
+cd /tmp/b2 && timeout 90 node repro9-job-across-reload.mjs
 ```
 
 ```
-PASS 3x mount/dispose/remount — tools 6→0, routes 1→0 each cycle, no duplicate error
-PASS failed start rolls back — leaked registrations: []
-PASS sqlite handle leak — 20 descriptors leaked by 20 read-only listSessions calls (expected 0)
-PASS hung job pins slot; next bg call degrades inline — status=stopping, second call returned a jobId=no (blocked inline)
-
-SUMMARY: 4 clean, 0 defective
+cycle 4 -> {"ok":true,"jobId":null,"text":"参与 1 家 / 成功 1 家\n圆桌问题: job 4\n\n[slow] (4000ms)\ndone\n"}
+job records still live after 4 reloads: completed,completed,completed
 ```
 
-(The `PASS`/`FAIL` column asserts the *observed* behaviour, not the desired one: the
-SQLite and job lines pass because the defect reproduced. Only the first two lines are
-clean verdicts.)
+F7 stands as written for the panel path.
 
-## Verdict table
-
-| # | Area | Verdict | Severity | Evidence |
-|---|---|---|---|---|
-| F1 | `ctx.effect` ownership, 3× mount/dispose/remount | **CLEAN** | — | `repro1-remount.mjs` |
-| F2 | HMR-shaped reload; failed mid-registration start | **CLEAN** | — | `repro2-hmr.mjs`, `repro2b-partial.mjs` |
-| F3 | SQLite handle lifetime (`opencode.js:62`, `zcode.js:64`) | **CONFIRMED LEAK** | **high** | `repro4b-fd.mjs`, `repro4-sqlite.mjs`, `repro4e-emfile.mjs` |
-| F4 | Job `done` never settles → slot pinned forever; refusal swallowed into a blocking inline call | **CONFIRMED** | **medium** | `repro5-degrade.mjs`, `repro5d-hang.mjs` |
-| F5 | In-flight HTTP dispatch not aborted by disposal | **CONFIRMED** (impact low) | low | `repro3-inflight.mjs`, `repro3b-stale.mjs` |
-| F6 | `recent` ring and other module state | **CLEAN** | — | `repro6-recent.mjs` |
-| F7 | Unowned panel jobs survive disposal; reload exhausts the bucket and the POST stalls | **CONFIRMED** | low | `repro8-job-reload.mjs`, `repro9-job-across-reload.mjs` |
-| F8 | Cold-cache `/state` availability probe has no in-flight coalescing (N requests → N × P subprocesses) | **CONFIRMED** | low | `repro11-detect-storm.mjs`, `repro11b-storm-real.mjs` |
-| — | Late/removed `webServer` service | **CLEAN** | — | `repro7-http-dispose.mjs` |
-| — | Roundtable `batches` map | **absent** (already removed) | — | `grep -rn batches src/ client.js` → no match |
-
-## Answer to the three questions asked
-
-1. **Is 3× remount/dispose clean?** Yes. Six mount cycles (three in the counting loop,
-   one after it, plus two more in the service-lifecycle probe) each produced exactly
-   6 tools and 1 route, and each dispose returned the registry to 0/0 with no
-   duplicate-registration error. A start that fails mid-way is rolled back completely.
-2. **SQLite handle verdict?** **Leaking.** One descriptor per `listSessions`,
-   `readSession`, and `exportSession` call in both `opencode.js` and `zcode.js`;
-   `db()` opens a `DatabaseSync` that is never closed on success *or* error. 100 listing
-   calls leaked 101 descriptors; under `ulimit -n 128` the provider died after 108 calls
-   with `unable to open database file`. Only GC reclaims them, so the ceiling is
-   nondeterministic. Fix: scope each handle to the call and `close()` in `finally`.
-3. **Report path:** `docs/audit2/B2-bughunt.md`.
+---
 
 ### F8 (low) — cold-cache `/state` probe has no in-flight coalescing: N concurrent panel requests spawn N × providers subprocesses
 
@@ -608,135 +702,119 @@ async function detectRows(force = false) {
 }
 ```
 
-### F3 addendum — the fix must close *only* handles this module opened
+## Consolidated reproduction
 
-A naive `finally { db.close() }` around the query bodies breaks the existing provider
-tests, because `openDb` (the test injection) returns the **same shared handle** on every
-call, and those tests call `listSessions` then `readSession` on it:
+Every headline claim above runs from one command against the shipped modules:
 
 ```bash
-cd /tmp/b2 && timeout 30 node repro4f-injection.mjs
+cd /tmp/b2 && timeout 120 node repro10-summary.mjs
 ```
 
 ```
-first use: [ [Object: null prototype] { id: 's1' } ]
-second use THREW: database is not open -> shared-stub tests would break
+PASS 3x mount/dispose/remount — tools 6→0, routes 1→0 each cycle, no duplicate error
+PASS failed start rolls back — leaked registrations: []
+PASS sqlite handle leak — 20 descriptors leaked by 20 read-only listSessions calls (expected 0)
+PASS hung job pins slot; next bg call degrades inline — status=stopping, second call returned a jobId=no (blocked inline)
+
+SUMMARY: 4 clean, 0 defective
 ```
 
-`tests/provider-opencode.test.js:19-30` (`memDb()`) and
-`tests/provider-zcode.test.js:42-58` both use that pattern. So the fix has to keep
-ownership explicit:
+(The `PASS`/`FAIL` column asserts the *observed* behaviour, not the desired one: the
+SQLite and job lines pass because the defect reproduced. Only the first two lines are
+clean verdicts.)
 
-```js
-async function withReadDb(fn) {
-  if (openDb) return fn(await openDb())          // injection owns the handle
-  const { DatabaseSync } = await import('node:sqlite')
-  const db = new DatabaseSync(paths.dbPath, { readOnly: true })
-  try { return await fn(db) } finally { db.close() }
-}
-```
+## Verdict table
 
-i.e. close only the handle this module created. That keeps the injection contract
-unchanged (a stub can still share one in-memory DB) while removing the production leak.
+| # | Area | Verdict | Severity | Evidence |
+|---|---|---|---|---|
+| F1 | `ctx.effect` ownership, 3× mount/dispose/remount | **CLEAN** | — | `repro1-remount.mjs` |
+| F2 | HMR-shaped reload; failed mid-registration start | **CLEAN** | — | `repro2-hmr.mjs`, `repro2b-partial.mjs` |
+| F3 | SQLite handle lifetime (`opencode.js:62`, `zcode.js:64`) | **CONFIRMED LEAK → FIXED during this audit** | was **high** | `repro4b-fd.mjs`, `repro4-sqlite.mjs`, `repro4e-emfile.mjs`; post-fix `repro13-partial-fix.mjs`, `repro15-empty-db.mjs` |
+| F4 | Job `done` never settles → slot pinned forever; refusal swallowed into a blocking inline call | **CONFIRMED** — half 2 fixed during audit, half 1 **OPEN** | **medium** | `repro5-degrade.mjs`, `repro5d-hang.mjs` |
+| F5 | In-flight HTTP dispatch not aborted by disposal | **CONFIRMED** (impact low) | low | `repro3-inflight.mjs`, `repro3b-stale.mjs` |
+| F6 | `recent` ring and other module state | **CLEAN** | — | `repro6-recent.mjs` |
+| F7 | Unowned panel jobs survive disposal; reload exhausts the bucket and the POST stalls | **CONFIRMED** | low | `repro8-job-reload.mjs`, `repro9-job-across-reload.mjs` |
+| F8 | Cold-cache `/state` availability probe has no in-flight coalescing (N requests → N × P subprocesses) | **CONFIRMED** | low | `repro11-detect-storm.mjs`, `repro11b-storm-real.mjs` |
+| — | Late/removed `webServer` service | **CLEAN** | — | `repro7-http-dispose.mjs` |
+| — | Roundtable `batches` map | **absent** (already removed) | — | `grep -rn batches src/ client.js` → no match |
 
-### F3 addendum 2 — the in-progress fix (commit `f6eaf59` era, uncommitted) is **incomplete**: `listSessions` still leaks
+## Answer to the three questions asked
 
-The working tree now converts `readSession` and `exportSession` to a `withDb(...)` helper
-in both providers, but leaves `listSessions` on the old direct `await db()` path
-(`src/provider/opencode.js:99`, `src/provider/zcode.js:...`). Measured per entry point
-against the current working tree:
+1. **Is 3× remount/dispose clean?** Yes. Six mount cycles (three in the counting loop,
+   one after it, plus two more in the service-lifecycle probe) each produced exactly
+   6 tools and 1 route, and each dispose returned the registry to 0/0 with no
+   duplicate-registration error. A start that fails mid-way is rolled back completely.
+2. **SQLite handle verdict?** **It was leaking; it is now fixed.** At the audit
+   baseline, one descriptor leaked per `listSessions`, `readSession`, and
+   `exportSession` call in both `opencode.js` and `zcode.js` — `db()` opened a
+   `DatabaseSync` that was never closed on success *or* error. 100 listing calls leaked
+   101 descriptors; under `ulimit -n 128` the provider died after 108 calls with
+   `unable to open database file`, and only GC reclaimed the descriptors, so the ceiling
+   was nondeterministic. During the audit the providers gained a `withDb` helper that
+   scopes and closes a handle per read (leaving `openDb`-injected handles to their
+   owner); re-measurement on the current tree shows 0 descriptors leaked across all six
+   entry points and 0 on the throw path, with the provider suites still green.
+3. **Report path:** `docs/audit2/B2-bughunt.md`.
+
+## Post-fix re-measurement (latest tree)
+
+While this audit ran, `src/provider/opencode.js` and `src/provider/zcode.js` gained the
+`withDb` helper and all three read entry points were converted. Re-measured on the
+current working tree:
 
 ```bash
 cd /tmp/b2 && timeout 90 node repro13-partial-fix.mjs
 ```
 
 ```
-opencode.listSessions              20 calls ->  20 descriptors LEAK
+opencode.listSessions              20 calls ->   0 descriptors closed
 opencode.readSession               20 calls ->   0 descriptors closed
 opencode.exportSession             20 calls ->   0 descriptors closed
-zcode.listSessions                 20 calls ->  20 descriptors LEAK
-zcode.readSession               20 calls ->   0 descriptors closed
-zcode.exportSession               20 calls ->   0 descriptors closed
+zcode.listSessions                 20 calls ->   0 descriptors closed
+zcode.readSession                  20 calls ->   0 descriptors closed
+zcode.exportSession                20 calls ->   0 descriptors closed
 ```
 
-(The zcode line printed `-20` once because the opencode leak had not yet been collected;
-the steady state is one descriptor per `listSessions` call for both providers.)
-
-**Why this matters more than the other two entry points:** `listSessions` is the only
-one the panel calls on a timer — `/sessions` calls it for **every** configured provider
-on every refresh, and the client-side `LIST_POLL_MS` is 2500 ms. Leaving the busy path
-leaking while fixing the rare paths leaves the practical defect in place.
-
-**Required change** — `listSessions` must use the same helper, which also means moving
-its `try/catch` inside the callback so the handle closes on the error path:
-
-```js
-async function listSessions({ query, limit = 20 } = {}) {
-  return withDb((d) => {
-    try { … } catch (err) { throw new Error('opencode listSessions 失败: ' + …) }
-  })
-}
-```
-
-Note the current `withDb` bodies are *not* reindented (the diff wraps existing statements
-in `(d) => {` without touching indentation). That is cosmetic, but it makes the
-`try/finally` easy to mis-scope on the next edit; reindenting while adding `listSessions`
-is worth doing in the same change.
-
-### F4 addendum — current working tree: half of F4 is already fixed; the permanent slot pin is **not**
-
-`startJob` (`src/tools.js:153-171`) now rethrows every refusal except the
-missing-controller case, so half 2 of F4 is fixed in the working tree — a "background
-job limit reached" is no longer silently converted into a blocking inline call:
+**→ F3 is FIXED on the current tree.** The leak I reported was real and is now closed on
+every entry point. The throw path is closed as well:
 
 ```bash
-cd /tmp/b2 && timeout 40 node repro5-degrade.mjs
+cd /tmp/b2 && timeout 60 node repro15-empty-db.mjs
 ```
 
 ```
-1) first background job: agent-alliance-210775843e7547ce
-   kill outcome: requested
-   status 300ms after kill: stopping
-   producer never settled because dispatch() ignores the abort signal
-2) second background:true call -> REJECTED: background job limit reached for this owner (limit: 1); use job_kill to stop an unneeded j
-   elapsed: 1 ms; backend dispatch count: 1
-3) plugin-warned about the fallback? false
+opencode.readSession(missing) x25 -> threw 25 times, descriptors leaked: 0
+zcode.readSession(missing) x25 -> threw 25 times, descriptors leaked: 0
 ```
 
-Half 1 is **unchanged**: `jobHooks().done` (`src/tools.js:184-194`) is still
-`Promise.resolve(produced).then(...)` with no cancellation race, so a producer that
-ignores `signal` keeps the record in `stopping` indefinitely:
+And the fix kept the shared-stub injection contract intact — the concern raised in
+F3 addendum 1 was addressed by exempting `openDb`-injected handles:
 
 ```bash
-cd /tmp/b2 && timeout 40 node repro5d-hang.mjs
+cd /home/ova/dsh/.artifacts/dsh-plugins/dsh-agent-alliance && node --test tests/provider-opencode.test.js tests/provider-zcode.test.js
 ```
 
 ```
-after +2000ms -> status=stopping finishedAt=undefined
-after +4000ms -> status=stopping finishedAt=undefined
-still listed by jobs.list(undefined): true
-kill again returns: requested
+# tests 14
+# pass 14
+# fail 0
 ```
 
-Consequence in the current tree: the slot is pinned and every later *background* call
-now **fails loudly** instead of degrading (better), but the leaked record cannot be
-removed (`remove()` refuses non-terminal jobs) and the owner's background capacity is
-permanently reduced until process exit. The `Promise.race` fix above is still required.
-
-### F7 addendum — the inline fallback that F7 describes is also gone from the roundtable route?
-
-Partially. `src/http.js` still falls back to inline when `jobs.start` throws
-(`http.js:449-457`), and the panel's roundtable path has *no* `background` flag to
-distinguish "user wanted a job" from "no jobs service". So an exhausted bucket still
-produces `{ ok: true, jobId: null, text }` and a stalled POST:
+`src/tools.js` also changed during the audit: `startJob` now rethrows every refusal
+except the missing-controller case (half of F4), and `createSemaphore` moved the `active`
+increment into `begin()` so a promoted queue entry is counted. I verified the semaphore
+against its stated failure mode (peak concurrency must never exceed the cap):
 
 ```bash
-cd /tmp/b2 && timeout 90 node repro9-job-across-reload.mjs
+cd /tmp/b2 && timeout 60 node repro14-semaphore.mjs
 ```
 
 ```
-cycle 4 -> {"ok":true,"jobId":null,"text":"参与 1 家 / 成功 1 家\n圆桌问题: job 4\n\n[slow] (4000ms)\ndone\n"}
-job records still live after 4 reloads: completed,completed,completed
+with limit=2 and 4 calls issued -> in flight: 2 (expected 2)
+after one completes       -> in flight: 2 (expected 2: one promoted)
+after two complete        -> in flight: 2 (expected 2)
+peak observed concurrency: 2 (limit was 2)
+VERDICT: CLEAN cap honoured through promotion
 ```
 
-F7 stands as written for the panel path.
+**→ The semaphore fix is correct** for this scenario.

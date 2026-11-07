@@ -21,6 +21,16 @@
 (a) 完成通知永不送达、(b) agent 销毁时 job 不被取消、(c) 面板 `/tasks` 暴露本应属于某会话的 job。
 前一轮审计**未发现**这一条，且它在当前 HEAD 上**依然存在**。
 
+另附两条前一轮同样遗漏（且被错误标为 CLEAN）的缺陷：
+
+| 编号 | 缺陷 | 严重度 |
+|---|---|---|
+| **N1** | `exec.agent.sessionId` 不存在 → 后台 job 全部无主（通知丢失 / 不随 agent 取消 / 跨会话可见可杀 / 配额互踩） | **critical** |
+| **N2** | `runner.js` 只监听 `close` 且只 kill 直接子进程 → 孙进程占管道时 promise 永不结算，槽位永久泄漏 | **high** |
+| **N3** | `zcode` 的 `replaceAll` 把 prompt 里的 `$&`/`$$`/`$'` 当替换模式 → prompt 被静默篡改 | **high** |
+
+> 每条都附了可复现命令与实测输出；探针脚本写在 `/tmp` 且已删除，仓库源码零改动。
+
 ---
 
 ## Claim A — `jobs.start()` 在无 controller 时恒抛
@@ -129,7 +139,7 @@ spec.owner = undefined
 #### A-5 修复状态
 
 `2f6660e` 已给 `startJob` 加 try/catch 并返回 `undefined` 走既有内联回退（当前 `src/tools.js:130-152`；
-回退点在当前 `:364`、`:459`）。**这修好了面板症状，但没修 A-3** —— 我在当前 HEAD 上仍复现 owner=undefined。
+回退点在当前 `:378`、`:476`）。**这修好了面板症状，但没修 A-3** —— 我在当前 HEAD 上仍复现 owner=undefined。
 
 ---
 
@@ -242,12 +252,12 @@ vendor 缓存语义，插件侧未测量（也没有 usage 采样，见 `04-orch
 #### 缺陷本体
 
 ```js
-// src/tools.js:340（agent_dispatch 后台分支）
+// src/tools.js:363（agent_dispatch 后台分支）
 owner: exec?.agent?.sessionId,
-// src/tools.js:447（agent_roundtable 后台分支）
+// src/tools.js:470（agent_roundtable 后台分支）
 owner: exec?.agent?.sessionId,
 ```
-（基线 `e15fcf8` 在 `src/tools.js:315`、`:408`，同样两处。）
+（基线 `e15fcf8` 在 `src/tools.js:315`、`:408`；当前工作区在 `:363`、`:470`，同样两处。）
 
 DSH 的 `Agent` **没有 `sessionId` 成员**：
 
@@ -287,7 +297,7 @@ if (delivered || event.cause === 'teardown' || event.job.owner === undefined) re
 ```
 无主 job 在 settle 时**直接 return**，不注入、不唤醒。
 
-这里必须精确：插件自己的描述确实告诉模型去取结果（`src/tools.js:327`
+这里必须精确：插件自己的描述确实告诉模型去取结果（`src/tools.js:332`
 "collect the result with job_output"），所以模型**不是完全无从下手**。
 真正被破坏的是**框架层面的契约**：`dsh-tool-jobs` 装进 system prompt 的章节明确写着
 （`packages/jobs/tool-jobs/src/index.ts:253`）：
@@ -322,7 +332,7 @@ panel list(undefined) sees it:              [ 'agent-alliance-4f6ba2740243473f' 
 the originating session list("session-A") sees it: [ 'agent-alliance-4f6ba2740243473f' ]
 ```
 
-而 `http.js` 的 `/tasks` 正是按 `jobs.list(undefined)` 拉的（`src/http.js:475`），
+而 `http.js` 的 `/tasks` 正是按 `jobs.list(undefined)` 拉的（`src/http.js:516`），
 所以**任何一个会话发起的后台 dispatch 都会出现在面板任务列表里**，包括在另一个会话里
 点 "kill" 就能杀掉它。
 
@@ -385,67 +395,6 @@ A/B/C 都只是"某个功能不好用"，N1 是**正确性 + 资源 + 隔离**�
 
 **严重度：high**（原报告 `01-bugs.md:169` 明确把这一项标为 ✅ CLEAN，判断错误）
 
-**严重度：high**（静默数据损坏：模型发出去的 prompt 与目标 agent 收到的不一致，且会泄漏模板自身文本）
-
-`src/provider/zcode.js:29-34`：
-```js
-function expandTemplate(tpl, { prompt, resumeSessionId, cwd }) {
-  return tpl
-    .replaceAll('{prompt}', shellQuote(prompt))
-    .replaceAll('{session}', resumeSessionId ? shellQuote(resumeSessionId) : '')
-    .replaceAll('{cwd}', shellQuote(cwd || '.'))
-}
-```
-
-`String.prototype.replaceAll` 的**第二个参数**（替换字符串）支持 `$&`、`` $` ``、`$'`、`$$`、`$1`
-等特殊模式。`shellQuote` 返回的是 `'...'` 形式的字符串，**其中的 `$` 没有被转义**，
-于是用户 prompt 里的 `$&` / `` $` `` / `$'` / `$$` 会被 `replaceAll` 当成 pattern 解释。
-
-实测（`/tmp/zc.mjs`，模板 `zcode run -p {prompt} --yes`）：
-
-```
-prompt  : "fix the $& backreference in my regex"
-received: "fix the {prompt} backreference in my regex"          <<< 字面量 {prompt} 被插回来
-
-prompt  : "explain $$ in Makefiles"
-received: "explain $ in Makefiles"                              <<< 少了一个 $
-
-prompt  : "what does $' mean in bash"
-received: "what does  --yes\'' mean in bash"                    <<< 模板尾部 "--yes" 被复制进 prompt
-```
-
-第三种最恶劣：`` $' `` 的语义是"匹配位置之后的整段字符串"，所以 `replaceAll` 把**模板中
-`{prompt}` 之后的所有内容**（这里是 ` --yes`）复制进了 prompt 内部。
-任何讨论正则替换、Makefile、bash 引号的提问（都是常见的编码任务）都会命中。
-
-**为什么不是 RCE**：我专门做了注入尝试 —— 用 `$'`、`` $` ``、`$&`、`$$` 作 payload，
-配 8 种模板 + 真跑 `sh -c` 检查 marker 文件是否被创建（`/tmp/aa_fuzz.mjs`），
-**0 命中**。原因是 `replaceAll` 破坏文本后，payload 仍落在单引号内，`sh` 只把它当字面量。
-所以这是**内容损坏**，不是命令注入 —— 但仍然严重：它让插件在**无声中改变了用户发给外部 agent 的指令**。
-
-**修复（1 行 × 3）**：用函数形式的替换，避免 pattern 解释：
-```js
-.replaceAll('{prompt}', () => shellQuote(prompt))
-.replaceAll('{session}', () => (resumeSessionId ? shellQuote(resumeSessionId) : ''))
-.replaceAll('{cwd}', () => shellQuote(cwd || '.'))
-```
-
-**为什么前一轮漏掉**：`01-bugs.md` 的 F3 只按"`catch {}` 是否掩盖故障"分类，
-`02-framework.md`/`03-official-subagents.md` 没有检查 `replaceAll` 的替换字符串语义；
-`tests/provider-zcode.test.js:33-40` 的注入测试只用了**单引号** payload
-（`"x'; rm -rf /; echo '"`），恰好是 `replaceAll` 不会特殊处理的形式，所以测试全绿。
-
-| 我怀疑的缺陷 | 尝试的证伪方式 | 结果 |
-|---|---|---|
-| **zcode `{prompt}` 模板经 `replaceAll` 注入命令** | 用 `$'`、`` $` ``、`$&`、`$$` 做 payload，配 4 种模板，再真跑 `sh -c` 找 marker 文件（`/tmp/aa_fuzz.mjs` 等） | **无法构成注入**。`String.replaceAll` 的 `$`-pattern 确实会**破坏脚本文本**（如 prompt `"fix regex $& usage"` 被改写成 `"fix regex {prompt} usage"`），但破坏后的引号结构仍把 payload 关在单引号内，**注入 0 命中**。⇒ 只能算 medium 级的**内容损坏**（prompt 被静默篡改），不是 RCE。原报告未提及 `replaceAll` 语义，属**遗漏但非最优**。 |
-| **并发导入台账丢更新** | 两个 `importOne` 并发、加 `setTimeout` 拉大窗口、给 `/tmp` 副本插桩打点 | **打不掉，但也不成立**：`importOne` 在 `await` 之前就同步 `loadLedger`+`saveLedger` 吗？不是——但我实测两条并发都写进了台账（`ledger keys: ['claude:s1','claude:s2']`）。原因：`saveLedger` 是**同步** fs 调用，`loadLedger`→`saveLedger` 之间没有 `await`，Node 单线程下天然原子。**HEAD 又加了 `recordLedgerEntry` 写队列**（`src/importer/persist.js:97-112`），更无风险。⇒ 前一轮"未验证"的悬念可以关闭。 |
-| **`runner.js` 子进程在 abort/timeout 后未真正回收** | 真实 `spawnCli` + `sh -c` 带孙进程占住 stdout 管道 | **成立且严重，但属新缺陷线（见下）**。 |
-| **`/state` 的 `available` 其实有 detect** | grep 全部调用点 | 失败，确认为谎报（Claim B） |
-
-### 附带发现 N2 — `runner.js` 的超时/取消只 kill 直接子进程，且只监听 `close`
-
-**严重度：high**（原报告 `01-bugs.md:169` 明确把这一项标为 ✅ CLEAN，判断错误）
-
 `src/runner.js:74` 只在 `close` 上结算：
 ```js
 child.on('close', (code) => settle(code === null ? -1 : code))
@@ -497,5 +446,69 @@ child.on('exit', (code) => { child.stdout.destroy(); child.stderr.destroy(); set
 
 **为什么前一轮判错了**：`01-bugs.md:169` 的验证方法是"`onAbort` 里调用了 `child.kill('SIGKILL')`"——
 它只证明了 **kill 被调用**，没有证明 **promise 会 settle**。这两件事在存在孙进程时分开了。
+
+---
+
+## N3 — zcode 模板展开用 `String.replaceAll`，`$`-pattern 会静默篡改 prompt
+
+**严重度：high**（静默数据损坏：模型发出去的 prompt 与目标 agent 收到的不一致，且会泄漏模板自身文本）
+
+`src/provider/zcode.js:29-34`：
+```js
+function expandTemplate(tpl, { prompt, resumeSessionId, cwd }) {
+  return tpl
+    .replaceAll('{prompt}', shellQuote(prompt))
+    .replaceAll('{session}', resumeSessionId ? shellQuote(resumeSessionId) : '')
+    .replaceAll('{cwd}', shellQuote(cwd || '.'))
+}
+```
+
+`String.prototype.replaceAll` 的**第二个参数**（替换字符串）支持 `$&`、`` $` ``、`$'`、`$$`、`$1`
+等特殊模式。`shellQuote` 返回的是 `'...'` 形式的字符串，**其中的 `$` 没有被转义**，
+于是用户 prompt 里的 `$&` / `` $` `` / `$'` / `$$` 会被 `replaceAll` 当成 pattern 解释。
+
+实测（`/tmp/zc.mjs`，模板 `zcode run -p {prompt} --yes`）：
+
+```
+prompt  : "fix the $& backreference in my regex"
+received: "fix the {prompt} backreference in my regex"          <<< 字面量 {prompt} 被插回来
+
+prompt  : "explain $$ in Makefiles"
+received: "explain $ in Makefiles"                              <<< 少了一个 $
+
+prompt  : "what does $' mean in bash"
+received: "what does  --yes\'' mean in bash"                    <<< 模板尾部 "--yes" 被复制进 prompt
+```
+
+第三种最恶劣：`$'` 的语义是"匹配位置之后的整段字符串"，所以 `replaceAll` 把**模板中
+`{prompt}` 之后的所有内容**（这里是 ` --yes`）复制进了 prompt 内部。
+任何讨论正则替换、Makefile、bash 引号的提问（都是常见的编码任务）都会命中。
+
+**为什么不是 RCE**：我专门做了注入尝试 —— 用 `$'`、`` $` ``、`$&`、`$$` 作 payload，
+配 8 种模板 + 真跑 `sh -c` 检查 marker 文件是否被创建（`/tmp/aa_fuzz.mjs`），
+**0 命中**。原因是 `replaceAll` 破坏文本后，payload 仍落在单引号内，`sh` 只把它当字面量。
+所以这是**内容损坏**，不是命令注入 —— 但仍然严重：它让插件在**无声中改变了用户发给外部 agent 的指令**。
+
+**修复（1 行 × 3）**：用函数形式的替换，避免 pattern 解释：
+```js
+.replaceAll('{prompt}', () => shellQuote(prompt))
+.replaceAll('{session}', () => (resumeSessionId ? shellQuote(resumeSessionId) : ''))
+.replaceAll('{cwd}', () => shellQuote(cwd || '.'))
+```
+
+**为什么前一轮漏掉**：`01-bugs.md` 的 F3 只按"`catch {}` 是否掩盖故障"分类，
+`02-framework.md`/`03-official-subagents.md` 没有检查 `replaceAll` 的替换字符串语义；
+`tests/provider-zcode.test.js:33-40` 的注入测试只用了**单引号** payload
+（`"x'; rm -rf /; echo '"`），恰好是 `replaceAll` 不会特殊处理的形式，所以测试全绿。
+
+---
+
+## 附：我尝试驳回但失败的其它候选（记录负面结果，避免重复劳动）
+
+| 我怀疑的缺陷 | 尝试的证伪方式 | 结果 |
+|---|---|---|
+| **zcode `{prompt}` 模板可命令注入** | 用 `$'`、`` $` ``、`$&`、`$$` 做 payload，配 8 种模板，再真跑 `sh -c` 找 marker 文件 | **注入不成立**（0 命中）。但 `replaceAll` 的 `$`-pattern 确实会**破坏 prompt 文本**，见 N3。 |
+| **并发导入台账丢更新** | 两个 `importOne` 并发、用 `setTimeout` 拉大窗口、给 `/tmp` 副本插桩打点 | **打不掉，且不成立**。`saveLedger` 是**同步** fs 调用，`loadLedger`→`saveLedger` 之间没有 `await`，Node 单线程下天然原子；实测两条并发都进了台账（`['claude:s1','claude:s2']`）。HEAD 又加了 `recordLedgerEntry` 写队列（`src/importer/persist.js:97-112`）。⇒ 前一轮"未验证"的悬念可以关闭。 |
+| **`/state` 的 `available` 其实调了 detect** | grep 全部调用点 | **驳回失败**，确认是谎报（Claim B）。 |
 
 探针脚本均写在 `/tmp` 且已删除；仓库源码零改动。

@@ -64,6 +64,11 @@ function createSemaphore(limit) {
           begin() {
             if (started) return
             started = true
+            // A promoted queue entry takes the slot its predecessor just freed.
+            // Without this the counter only ever decrements on completion, so
+            // `active` drifts below the true in-flight count and each later
+            // batch exceeds `limit` (measured: 2 -> 4 on the second roundtable).
+            active += 1
             if (signal && onAbort) signal.removeEventListener('abort', onAbort)
             let pending
             try {
@@ -85,7 +90,7 @@ function createSemaphore(limit) {
         }
         entry.onAbort = onAbort
         if (active < limit) {
-          active += 1
+          // `begin()` owns the increment so a promoted entry is counted too.
           entry.begin()
           return
         }

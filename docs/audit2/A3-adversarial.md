@@ -4,24 +4,36 @@ Role: red-team the implementation of the 7 first-batch fixes **before** they are
 Repo `dsh-agent-alliance`, audited at `2d68e3f` (audit commit) with the Lead's fix work observed in
 progress. READ-ONLY: this file is the only artifact.
 
-**Status: in progress** — one section per fix, appended.
+**Status: complete.** Final state re-verified at `1b15214`.
+
+## Bottom line for the Lead
+
+**One defect blocks release: R6.3 — the `maxConcurrent` semaphore loses its accounting.** It is pre-existing, not
+introduced by any of the seven fixes, but **Fix 6 turns it into a user-visible regression**: the first roundtable
+after a promotion is bounded, the second runs at double the configured limit, and no test can see it because every
+existing concurrency test measures a single batch. Root cause is one missing `active += 1` on the promotion path
+(`src/tools.js:56-99`). Corrected implementation and two pinning tests are in "R6.3 — STILL OPEN at `1b15214`".
+
+**Everything else is either fixed or acceptable as-is.** Fixes 5, 6 and 7 landed with all three of the edge cases
+this audit flagged already handled; Fixes 1 and 3 were repaired on the strength of A2's findings; the residual
+items (R4.3 abort-result shape, R5.1 missing prefix test, R6.2 member-failure wording) are polish, not blockers.
 
 ## What was actually reviewed
 
 The Lead began patching while this audit ran, so this report reviews the **real diffs**, not hypothetical
 ones. That is strictly better than reviewing a plan: every claim below is against code that exists.
 
-| Fix | Status at review time | Where |
-|---|---|---|
-| 1. `startJob` catches + inline fallback | **committed** (`2f6660e`) | `src/tools.js:126-146`, `src/http.js:434-469` |
-| 2. `/state` real availability | **not started** | `src/backend.js:363-385` still returns `available: true` |
-| 3. `resumeSessionId` guard moved up | **committed** | `src/backend.js:228-231` |
-| 4. pre-aborted signal rejected | **committed** | `src/tools.js:50-56` |
-| 5. round-2 prompt starts with `basePrompt` | **not started** | `src/roundtable.js:5-20` unchanged |
-| 6. roundtable inside `maxConcurrent` | **not started** | `src/tools.js:412-424` bypasses `gate` |
-| 7. exclude member's own prior answer | **not started** | `src/roundtable.js:7-9` includes self |
+| Fix | Status at `2d68e3f` | Status at `1b15214` | Where |
+|---|---|---|---|
+| 1. `startJob` catches + inline fallback | committed, 2 defects | **fixed** (`f6eaf59`) | `src/tools.js`, `src/http.js` |
+| 2. `/state` real availability | not started | **committed** (`446a5f9`), fail-closed after `f6eaf59` | `src/backend.js`, `src/http.js` |
+| 3. `resumeSessionId` guard moved up | committed, 1 defect | **fixed** (`f6eaf59`) | `src/backend.js` |
+| 4. pre-aborted signal rejected | committed | committed, R4.3 residual | `src/tools.js:45-99` |
+| 5. round-2 prompt starts with `basePrompt` | not started | **committed** (`3837623`), all traps avoided | `src/roundtable.js:17-33` |
+| 6. roundtable inside `maxConcurrent` | not started | **committed** (`3837623`), **gated on R6.3** | `src/tools.js:438-446` |
+| 7. exclude member's own prior answer | not started | **committed** (`3837623`), history untouched | `src/roundtable.js:17-24` |
 
-Verification baseline: `node --test 'tests/*.test.js'` → **188 pass / 0 fail** at review time.
+Verification baseline moved from **188 pass** at review start to **197 pass / 0 fail** at `1b15214`.
 
 ---
 
@@ -1339,3 +1351,167 @@ This is accurate and better reasoned than my R4.1 — it correctly identifies th
 `src/backend.js` still returns `available: true` unconditionally for every registered provider, and the panel still
 shows four green rows on a machine where `detectAll()` reports all four unavailable. R2.1–R2.5 and the caching
 design all still apply unchanged.
+
+---
+
+## R6.3 — STILL OPEN at `1b15214`, and it is now the blocking defect
+
+Re-verified after the Lead's `f6eaf59` ("repair four defects the adversarial audit found") and `1b15214`.
+That commit fixed four findings — from **A2**, not from this report:
+
+- the blanket `jobs.start()` catch (my R1.2 — fixed, and better than my sketch: it matches the controller
+  refusal instead of string-matching a capacity message),
+- the dead logger read (my R1.1 — fixed for both sites, `warn()` helper reading the `ctx.logger` accessor),
+- the resume-guard ordering vs the stale-route check (an ordering case I had marked clean — A2 was right, the
+  guard must sit *below* the route check so a removed provider is not misreported as a resume error),
+- the availability probe failing open.
+
+**R6.3 was not among them and is unfixed.** The code at `src/tools.js:56-99` is byte-identical in the relevant
+part: `active += 1` happens only on the fast path, while `begin()`'s `.finally()` decrements `active` for every
+entry including promoted ones, and promotion is `queue.shift().begin()` with no increment.
+
+Reproduced against the **current HEAD** file body (`/tmp/real-gate2.mjs`, real `createSemaphore` extracted from
+`src/tools.js`, real roundtable access pattern — 4 members, `maxConcurrent: 2`):
+
+```
+roundtable #1 (4 members, limit 2): peak = 2 ok
+roundtable #2 (4 members, limit 2): peak = 4 OVER LIMIT
+roundtable #3 (4 members, limit 2): peak = 4 OVER LIMIT
+```
+
+and the minimal form (`/tmp/real-gate.mjs`):
+
+```
+maxConcurrent=1 -> observed peak concurrency = 2
+CONFIRMED: committed gate does not bound concurrency after a promotion
+```
+
+**Why no test catches it.** `tests/tools.test.js:419-442` dispatches exactly one batch of three with limit 2 and
+asserts `peak <= 2`. The first batch *is* bounded, because drift only becomes visible once a promoted entry's
+decrement lands. A single-batch test cannot observe it. The `agent_roundtable` tests inherit the same blind spot.
+This is why 196 tests pass over a gate that stops working on the second use.
+
+### Second, independent leak in the same function
+
+Aborting a **queued** entry also strands accounting, and my first proposed one-line fix did not address it.
+Verified (`/tmp/fix-edge.mjs`): after a queued entry is aborted while another holds the only slot, `active` stays
+at `1` with an empty queue once the holder finishes. Not fatal for the gate (a later `finally` resumes
+promotion), but it makes `active` meaningless as a bound and interacts with R6.3's drift.
+
+### The fix, verified
+
+Two changes inside `createSemaphore`:
+
+```js
+run(signal, fn) {
+  if (signal?.aborted === true) return Promise.reject(new Error('aborted before start (maxConcurrent=' + limit + ')'))
+  return new Promise((resolveRun, rejectRun) => {
+    let started = false
+    const entry = {
+      queued: false,                                  // (2) track promotion eligibility
+      begin() {
+        if (started) return
+        started = true
+        if (signal && onAbort) signal.removeEventListener('abort', onAbort)
+        entry.queued = false
+        let pending
+        try { pending = Promise.resolve(fn()) } catch (error) { pending = Promise.reject(error) }
+        pending.then(resolveRun, rejectRun).finally(() => { active -= 1; promote() })
+      },
+    }
+    function onAbort() {
+      const wasQueued = entry.queued
+      const index = queue.indexOf(entry)
+      if (index >= 0) queue.splice(index, 1)
+      entry.queued = false
+      if (signal) signal.removeEventListener('abort', onAbort)
+      if (wasQueued) promote()                        // (2) an aborted queued entry vacates its place
+      rejectRun(new Error('aborted while queued (maxConcurrent=' + limit + ')'))
+    }
+    entry.onAbort = onAbort
+    if (active < limit) { active += 1; entry.begin(); return }
+    entry.queued = true
+    queue.push(entry)
+    if (signal) { if (signal.aborted) onAbort(); else signal.addEventListener('abort', onAbort, { once: true }) }
+  })
+}
+
+// (1) every promotion takes a slot, so every decrement has a matching increment
+function promote() {
+  const next = queue.shift()
+  if (next === undefined) return
+  active += 1
+  next.begin()
+}
+```
+
+Verified with the corrected implementation (`/tmp/final-gate.mjs`), six batches each:
+
+```
+limit=1: peak across 6 batches = 1 OK; active=0 queue=0
+limit=2: peak across 6 batches = 2 OK; active=0 queue=0
+limit=3: peak across 6 batches = 3 OK; active=0 queue=0
+mixed abort run: active = 0 queue = 0 | results: 0,1,A,3,4,5,6,7,8,9
+CLEAN after mixed aborts
+```
+
+The `finite gate` invariant now holds across batches, limits, and interleaved aborts.
+
+### The test that pins it (must be added with the fix)
+
+```js
+test('maxConcurrent still bounds after a queued call is promoted', async () => {
+  let inFlight = 0, peak = 0
+  const slow = { id: 's', label: 's', dispatch: async () => {
+    inFlight++; peak = Math.max(peak, inFlight)
+    await new Promise(r => setTimeout(r, 20)); inFlight--
+    return { text: 'x' }
+  } }
+  const { ctx, registered } = mockCtx()
+  const { registry, resolver } = wire([slow])
+  registerTools(ctx, { registry, resolver, config: makeConfig({ maxConcurrent: 1 }) })
+  const tool = registered.find(t => t.name === 'agent_dispatch')
+  const go = () => tool.execute({ provider: 's', prompt: 'p' }, { signal: new AbortController().signal })
+
+  await Promise.all([go(), go(), go()])     // forces promotions
+  peak = 0
+  await Promise.all([go(), go(), go()])     // the batch the current code over-admits
+  assert.equal(peak, 1, 'a promoted call must not leave the gate over-admitting')
+})
+
+test('aborting a queued call releases its place', async () => {
+  let release
+  const blocker = { id: 'b', label: 'b', dispatch: () => new Promise(r => { release = () => r({ text: 'done' }) }) }
+  const { ctx, registered } = mockCtx()
+  const { registry, resolver } = wire([blocker])
+  registerTools(ctx, { registry, resolver, config: makeConfig({ maxConcurrent: 1 }) })
+  const tool = registered.find(t => t.name === 'agent_dispatch')
+  const running = tool.execute({ provider: 'b', prompt: 'hold' }, { signal: new AbortController().signal })
+  await Promise.resolve()
+  const c = new AbortController()
+  const queued = tool.execute({ provider: 'b', prompt: 'drop' }, { signal: c.signal })
+  c.abort()
+  await assert.rejects(() => queued, /aborted while queued/)
+  release()
+  await running
+  // The gate must still accept a new call promptly (no stranded slot).
+  const next = await Promise.race([
+    tool.execute({ provider: 'b', prompt: 'after' }, { signal: new AbortController().signal }),
+    new Promise((_, rej) => setTimeout(() => rej(new Error('slot stranded')), 500)),
+  ])
+  assert.ok(next !== undefined)
+})
+```
+
+## Corrections to this report
+
+Three of my own claims did not survive verification, and are corrected in place above:
+
+| Claim | Correction |
+|---|---|
+| R1.1 "`serviceOf(ctx,'logger')` is dead in `tools.js`" | **False.** `serviceOf` falls back to a property read; only `http.js`'s bare `ctx.get` was dead. Severity high → low. |
+| R1.2 "per-owner limit defaults small" | **Wrong number.** `DEFAULT_MAX_CONCURRENT_JOBS_PER_OWNER = 10` (`dsh-jobs-local/lib/index.js:340`). Severity high → medium. |
+| R2.5 "`zcode.detect()` returns no `available` field" | **False.** All three branches set it. Replaced with the real residual issue: template mode reports `available: true` without running. |
+
+R6.3, R7.2/R7.3, R4.2, R5.1, R5.2 and R6.1 all held up under verification, three of them reproduced as executable
+failures rather than argued from reading.
