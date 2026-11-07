@@ -90,29 +90,46 @@ this document is about.
 
 ### 3.5 Assumption defects found while reproducing the table
 
-These are not arithmetic errors but they change the meaning of the headline:
+I first wrote three defects here, then re-tested each against the audit's own
+numbers. **Two of my three were wrong** — the audit's rows are more internally
+consistent than they look. Corrections recorded rather than deleted:
 
-1. **`PEER` is charged at 1.0× in the Fix A row but 1.25× in the trap row.** Both
-   rows append the same 2,050-token suffix to a warm 12,800-token prefix, so a
-   consistent model must charge it the same way. If the suffix is a cache write
-   (the trap row's treatment), Fix A becomes 4 × (1,280 + 2,050 × 1.25) =
-   15,370 instead of 13,320, i.e. **127,370 → −19.7%, not −21.0%**. The printed
-   21.0% is the *optimistic* arm of an inconsistency. It is within ~1.3 points,
-   so the conclusion survives, but the exact figure is not uniquely determined
-   by the stated model.
-2. **The "already warm" row (112,520) does not model a warm cache.** A warm
-   prefix should be read at 0.1×, which would be ~66,440. 112,520 is exactly
-   125,320 − 12,800, i.e. it removes only the *write premium* (1.25 → 1.0) and
-   still charges full price for the prefix. The row is mislabelled; its own
-   number is conservative, so the `−29.1%` "ceiling" is understated, not
-   overstated.
-3. **Fix B (125,800) is not reproducible** from the stated symbols by any
-   interpretation tried (server-side resume implies round 2 sends only `PEER`,
-   which gives 120,200). Marked **UNVERIFIED arithmetic**; it does not affect the
-   Fix A verdict.
-4. Both figures assume the vendor charges a **cache-write premium at all**. That
-   is Anthropic's model; see §1, where OpenAI's is different. The whole `−21.0%`
-   row is contingent on the §1 ratio findings.
+1. **WITHDRAWN — `PEER` charging was not inconsistent.** I initially claimed the
+   Fix A row charges `PEER` at 1.0x while the trap row charges it at 1.25x. That
+   compares two different scenarios: Fix A leaves `PEER` after a *breakpoint*
+   (uncached suffix, full price), while the trap row writes the *entire*
+   `S+P+PEER` block because the prefix is header-first (everything is a write).
+   Both rows are internally correct. Recomputing Fix A with `PEER` as a write
+   gives −19.7%; the audit's −21.0% is the correct figure *for the scenario it
+   labels*. **No defect.**
+
+2. **Fix B does reproduce — WITHDRAWN.** I first reported 125,800 as
+   irreproducible. It reproduces exactly if a resumed member's own previous
+   answer `A` is also served from that member's session cache at 0.1x:
+   `r2 per member = 12,800*0.1 + 2,050*1.0 + 1,200*0.1 = 3,450`, giving
+   `4*12,800*1.25 + 4*3,450 + 48,000 = 125,800`. The difference from Fix A is
+   exactly `N*A*0.1 = 480`, i.e. Fix B's *only* modelled advantage is caching the
+   member's own answer, worth 0.3 points — which is why the audit says the two
+   are "essentially the same". **The audit is right and my original claim was
+   wrong.**
+
+3. **CONFIRMED defect — the "already warm" row is mislabelled.** `112,520` is
+   *exactly* `125,320 − 12,800`, i.e. it deletes the write premium
+   (`4 × 12,800 × 0.25`) and still bills the prefix at 1.0x in round 1. A
+   genuinely warm prefix is a **cache read at 0.1x**, which gives
+   `4*12,800*0.1 + 48,000 + 4*(12,800*0.1 + 2,050) = 66,440`, a **58.1%**
+   saving — not 29.1%. The audit labels this row "if the `S+P` prefix was already
+   warm before round 1" and then reports it as the *ceiling*. It is not a warm
+   cache; it is a no-write-premium cache. **The true ceiling is much higher, so
+   the audit's "realistic 21–29%" band is understated, not overstated.** The
+   conservative direction of the error does not change any recommendation, but
+   the label is wrong and a reader will take −29.1% as the maximum achievable,
+   which it is not.
+
+4. **CONFIRMED — the ratios are Anthropic-only.** §1.2 asserts the ratios "match
+   published cache pricing structure" and cites a single Anthropic page while
+   modelling four vendors. See §1.6: OpenAI's write rate is 0.0x on models before
+   GPT-5.6. Direction of error: conservative for the audit.
 
 ---
 

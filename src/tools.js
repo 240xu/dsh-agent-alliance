@@ -47,10 +47,14 @@ function createSemaphore(limit) {
   const queue = []
   return {
     run(signal, fn) {
-      // A caller that already cancelled must not start real external work. The
-      // queued branch below checks this too, but the fast path took a free slot
-      // and launched fn() regardless, so a cancelled call still spawned a CLI
-      // or an official subagent process.
+      // The queued branch below rejects an already-aborted signal, but the fast
+      // path used to take a free slot and launch fn() regardless. The tool
+      // pipeline happens to refuse an aborted call before the body runs
+      // (`dsh-tools` resolves ABORTED_BEFORE_DISPATCH first), so this guard is
+      // redundant on the model-tool path — but the panel's HTTP handlers call
+      // dispatch without any pipeline in front of them, and a signal can also be
+      // aborted between admission and the gate. Keep it as the one place that
+      // guarantees no external process starts for a cancelled call.
       if (signal?.aborted === true) {
         return Promise.reject(new Error('aborted before start (maxConcurrent=' + limit + ')'))
       }
@@ -409,8 +413,22 @@ export function registerTools(ctx, { resolver, registry, config, home, io }) {
           return resolver.resolve({ provider: id, parent })
         },
       }
+      // Every member dispatch goes through the same bounded gate as a single
+      // agent_dispatch. Without it a fan-out opens one process per member (and
+      // multiple stacked roundtables multiply that), which turns a provider 429
+      // into silently missing members.
+      const gatedRegistry = {
+        list: () => roundtableRegistry.list(),
+        get(id) {
+          const backend = roundtableRegistry.get(id)
+          return {
+            ...backend,
+            dispatch: (request) => gate.run(request.signal, () => backend.dispatch(request)),
+          }
+        },
+      }
       const runOnce = (signal) => runRoundtable({
-        registry: roundtableRegistry,
+        registry: gatedRegistry,
         prompt: String(args.prompt),
         rounds: args.rounds,
         providerIds,

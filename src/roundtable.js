@@ -2,16 +2,33 @@
 // 支持多轮辩论（后续轮次可见其他 agent 的上一轮发言）。
 // 综合分析交给调用方模型（DSH）完成——本模块只负责扇出、失败隔离与格式化。
 
-function buildDebatePrompt(basePrompt, round, history) {
-  if (round <= 1 || !history.length) return String(basePrompt)
-  const peer = history
+/**
+ * Build the prompt one member receives in a given round.
+ *
+ * Round 1 is the bare question. Later rounds keep that question as a **strict
+ * prefix** and append the debate material after it, so a provider's prompt
+ * cache can reuse the already-processed prefix. Opening with the round header
+ * would diverge from round 1 at the first byte and forfeit that reuse.
+ * @param {string} basePrompt the question every member receives
+ * @param {number} round 1-based round number
+ * @param {Array<{provider: string, text: string}>} history peers' previous answers
+ * @param {string} [selfId] receiving member's id, whose own answer is withheld
+ * @returns {string} the prompt for this member in this round
+ */
+function buildDebatePrompt(basePrompt, round, history, selfId) {
+  const question = String(basePrompt)
+  if (round <= 1 || !history.length) return question
+  const peers = selfId === undefined ? history : history.filter((entry) => entry.provider !== selfId)
+  if (peers.length === 0) return question
+  const peer = peers
     .map(h => '【' + h.provider + '】\n' + String(h.text || '').slice(0, 2000))
     .join('\n\n')
   return [
-    '【第' + round + '轮辩论】',
-    '原始问题：',
-    String(basePrompt),
+    question,
     '',
+    '---',
+    '',
+    '【第' + round + '轮辩论】',
     '其他 agent 的上一轮发言：',
     peer,
     '',
@@ -31,7 +48,7 @@ export async function runRoundtable({ registry, prompt, providerIds, cwd, model,
       try {
         const provider = registry.get(id) // 未知 id 会 throw → 记为该家失败
         const out = await provider.dispatch({
-          prompt: buildDebatePrompt(prompt, rn, history), cwd, model, timeoutMs, signal,
+          prompt: buildDebatePrompt(prompt, rn, history, id), cwd, model, timeoutMs, signal,
         })
         return {
           provider: id, ok: true, text: out.text,

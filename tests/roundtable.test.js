@@ -101,3 +101,32 @@ test('rounds 越界钳制到 1..3', async () => {
   await runRoundtable({ registry: reg, prompt: 'q', providerIds: ['c'], rounds: 99 })
   assert.equal(calls, 3)
 })
+
+test('round 2 keeps the question as a strict prefix and withholds the member own answer', async () => {
+  const seen = []
+  const makeMember = (id) => ({
+    id,
+    label: id,
+    async dispatch({ prompt }) {
+      seen.push({ id, prompt })
+      return { text: id + '-answer' }
+    },
+  })
+  const members = new Map([['a', makeMember('a')], ['b', makeMember('b')]])
+  const registry = { list: () => [...members.values()], get: (id) => members.get(id) }
+
+  const question = 'Explain the tradeoff between latency and cost.'
+  await runRoundtable({ registry, prompt: question, rounds: 2 })
+
+  const second = seen.filter((entry) => entry.prompt !== question)
+  assert.equal(second.length, 2, 'each member runs once in round 2')
+  for (const { id, prompt } of second) {
+    // Prefix preservation is what lets a provider cache reuse round 1's work.
+    assert.ok(prompt.startsWith(question), 'round 2 must open with the verbatim question')
+    assert.ok(prompt.includes('第2轮'), 'round 2 still announces the debate round')
+    // A member is not one of "other agents".
+    assert.ok(!prompt.includes(id + '-answer'), 'a member must not be shown its own answer as a peer claim')
+    const other = id === 'a' ? 'b' : 'a'
+    assert.ok(prompt.includes(other + '-answer'), 'the other member answer must be present')
+  }
+})
