@@ -8,6 +8,10 @@ scripts and their literal output are pasted. Probes live in `/tmp/b2/` and are
 reproduced inline; they import the plugin by absolute path and never modify it.
 Anything I could not execute is labelled **theoretical** and carries no severity claim.
 
+Every probe script is indexed in `/tmp/b2/README.md`; `cd /tmp/b2 && ./repro12-scripts.sh`
+replays the whole set. `/tmp` was wiped once during this audit, so the report quotes the
+literal output of every probe inline — it does not depend on those files surviving.
+
 **Scope (explicitly out of scope — covered by prior audits):** the semaphore's basic
 races and `runner.js` abort/timeout (audit A F1/F2), and `src/importer/*`,
 `src/parse.js` (audit2 B1). This report covers effect ownership, reload, in-flight
@@ -51,7 +55,8 @@ against the current tree.
 **Severity:** none. **Verdict:** verified clean by execution.
 
 What was checked: all six tools and the prefix route are registered through
-`ctx.effect(...)` in `index.js:180` and `index.js:150`, so the plugin fiber owns them.
+`ctx.effect(...)` in `index.js:142` (tools) and `index.js:117` inside `registerPanel`
+(the panel route), so the plugin fiber owns them.
 I mounted the plugin on a real Cordis `Context` six times total (3 disposes in the
 loop, then a 4th remount after the loop) and counted registrations before and after
 each dispose.
@@ -112,7 +117,7 @@ without a dispose between them **do** throw:
 ```
 Error: tool "agent_dispatch" is already registered (for a per-agent variant, register
 through that agent's `agent.ctx` instead)
-    at registerTools (.../src/tools.js:272)
+    at registerTools (.../src/tools.js:299)   // first tool registration
     at index.js:142
 ```
 

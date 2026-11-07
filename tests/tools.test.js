@@ -221,7 +221,7 @@ test('background dispatch passes a SessionId string owner and returns the id str
   const { registry, resolver } = wire([fakeProvider()])
   registerTools(ctx, { registry, resolver, config: makeConfig() })
   const tool = registered.find((entry) => entry.name === 'agent_dispatch')
-  const exec = { agent: { id: 'agent-1', sessionId: 'session-42' }, signal: new AbortController().signal }
+  const exec = { agent: { id: 'session-42' }, signal: new AbortController().signal }
   const value = await tool.execute({ provider: 'fake', prompt: 'long task', background: true }, exec)
   assert.deepEqual(value, { kind: 'background', jobId: 'agent-alliance-job-1' })
   assert.equal(jobsStarted.length, 1)
@@ -229,6 +229,12 @@ test('background dispatch passes a SessionId string owner and returns the id str
   assert.equal(spec.kind, 'agent-alliance')
   assert.equal(spec.owner, 'session-42')
   assert.equal(typeof spec.owner, 'string', 'owner must be the SessionId string, never the Agent')
+  // The Agent handle exposes its session identity as `id` (dsh-agent types.ts).
+  // Reading a non-existent `agent.sessionId` yields undefined, which silently
+  // makes every background job UNOWNED: no completion notice, no cancel on
+  // disposal, and the job becomes visible to every caller through
+  // jobs.list(undefined). Guard the field name, not just the value.
+  assert.equal(spec.owner, 'session-42', 'owner must come from agent.id')
   assert.match(spec.label, /fake/)
   assert.equal(typeof spec.run, 'function')
 })
@@ -238,7 +244,7 @@ test('background dispatch settles completed and appends the answer text', async 
   const { registry, resolver } = wire([fakeProvider()])
   registerTools(ctx, { registry, resolver, config: makeConfig() })
   const tool = registered.find((entry) => entry.name === 'agent_dispatch')
-  await tool.execute({ provider: 'fake', prompt: 'work', background: true }, { agent: { sessionId: 's-1' }, signal: new AbortController().signal })
+  await tool.execute({ provider: 'fake', prompt: 'work', background: true }, { agent: { id: 's-1' }, signal: new AbortController().signal })
   const appended = []
   const hooks = jobsStarted[0].run({ append: (text) => appended.push(text), updateProgress: () => {} })
   const outcome = await hooks.done
@@ -279,7 +285,9 @@ test('background cancel aborts the dispatched work', async () => {
   hooks.cancel('user asked')
   const outcome = await hooks.done
   assert.equal(aborted, true)
-  assert.equal(outcome.status, 'failed')
+  // A cancelled job settles `killed`: the producer refused, but the terminal
+  // state must be reached so the record can be removed and the slot released.
+  assert.equal(outcome.status, 'killed')
 })
 
 test('background dispatch without an agent still passes no owner', async () => {
@@ -296,7 +304,7 @@ test('inline fallback: no jobs service runs the work and returns the foreground 
   const { registry, resolver } = wire([fakeProvider()])
   registerTools(ctx, { registry, resolver, config: makeConfig() })
   const tool = registered.find((entry) => entry.name === 'agent_dispatch')
-  const value = await tool.execute({ provider: 'fake', prompt: 'inline', background: true }, { agent: { sessionId: 's-1' } })
+  const value = await tool.execute({ provider: 'fake', prompt: 'inline', background: true }, { agent: { id: 's-1' } })
   assert.equal(jobsStarted.length, 0)
   assert.equal(value.kind, undefined, 'inline fallback must not report a job id')
   assert.equal(value.text, 'answer:inline')
@@ -514,7 +522,7 @@ test('a capacity refusal is not silently converted into inline execution', async
   })
   const dispatch = tools.find((t) => t.name === 'agent_dispatch')
   await assert.rejects(
-    () => dispatch.execute({ provider: 'p1', prompt: 'x', background: true }, { signal: new AbortController().signal, agent: { sessionId: 's1' } }),
+    () => dispatch.execute({ provider: 'p1', prompt: 'x', background: true }, { signal: new AbortController().signal, agent: { id: 's1' } }),
     (error) => {
       assert.match(String(error.message), /limit reached/)
       return true
@@ -566,4 +574,20 @@ test('the concurrency limit holds across repeated batches, not just the first', 
   peak = 0
   await Promise.all(Array.from({ length: 6 }, (_, i) => call('b' + i)))
   assert.ok(peak <= 2, `second batch reached ${peak}, above the limit of 2`)
+})
+
+test('a cancelled job settles even when the producer ignores its signal', async () => {
+  const { ctx, registered, jobsStarted } = mockCtx()
+  // A producer that never observes the abort would otherwise pin the job in
+  // `stopping` forever: the record never settles, remove() refuses a live job,
+  // and the owner slot is never released.
+  const deaf = fakeProvider({ dispatch: () => new Promise(() => {}) })
+  const { registry, resolver } = wire([deaf])
+  registerTools(ctx, { registry, resolver, config: makeConfig() })
+  const tool = registered.find((entry) => entry.name === 'agent_dispatch')
+  await tool.execute({ provider: 'fake', prompt: 'stuck', background: true }, { signal: new AbortController().signal })
+  const hooks = jobsStarted[0].run({ append: () => {}, updateProgress: () => {} })
+  hooks.cancel('user asked')
+  const outcome = await hooks.done
+  assert.equal(outcome.status, 'killed')
 })

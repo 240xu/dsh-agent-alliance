@@ -78,3 +78,17 @@ test('exportSession：zcode db 完整导出', async () => {
   assert.equal(s.turns[0].user, 'zc 问')
   assert.equal(s.turns[0].assistant, 'zc 答')
 })
+
+test('a prompt containing $& is passed through verbatim, not as a replacement pattern', async () => {
+  const { makeZcodeProvider } = await import('../src/provider/zcode.js')
+  let seen
+  const provider = makeZcodeProvider({
+    config: { commandTemplate: 'run {prompt}' },
+    deps: { spawnCli: async ({ argv }) => { seen = argv; return { code: 0, stdout: 'ok' } } },
+  })
+  await provider.dispatch({ prompt: 'fix the $& backreference and $$ escapes' })
+  // String.replaceAll expands `$&`/`$$` inside a string replacement, which would
+  // rewrite the user's text into the matched token.
+  assert.ok(seen[2].includes('$& backreference'), 'prompt text must survive template expansion')
+  assert.ok(seen[2].includes('$$ escapes'), 'dollar escapes must survive template expansion')
+})

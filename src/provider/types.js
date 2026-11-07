@@ -25,21 +25,36 @@ export function createRegistry(providers) {
       return p
     },
     has(id) { return byId.has(id) },
-    async detectAll() {
-      const out = []
-      for (const p of byId.values()) {
+    /**
+     * Probe every provider in parallel and settle within `budgetMs`.
+     *
+     * Probing serially would let one slow CLI stall the whole answer: the
+     * per-provider timeouts reach 15-20s each, so four of them held /state for
+     * up to a minute. A provider that has not answered inside the budget is
+     * reported as not-yet-known rather than blocking the response.
+     * @param {{ budgetMs?: number }} [options] overall probe budget
+     * @returns {Promise<Array<{ id: string, label: string, available: boolean, detail?: string }>>} one row per provider
+     */
+    async detectAll({ budgetMs = 2500 } = {}) {
+      const rows = await Promise.all([...byId.values()].map(async (p) => {
         if (typeof p.detect !== 'function') {
-          out.push({ id: p.id, label: p.label, available: false, detail: 'no detect()' })
-          continue
+          return { id: p.id, label: p.label, available: false, detail: 'no detect()' }
         }
+        let timer
+        const timeout = new Promise((resolve) => {
+          timer = setTimeout(() => resolve({ available: false, detail: 'probe timed out' }), budgetMs)
+          timer.unref?.()
+        })
         try {
-          const d = await p.detect()
-          out.push({ id: p.id, label: p.label, ...d })
+          const d = await Promise.race([p.detect(), timeout])
+          return { id: p.id, label: p.label, ...d }
         } catch (err) {
-          out.push({ id: p.id, label: p.label, available: false, detail: String(err?.message || err) })
+          return { id: p.id, label: p.label, available: false, detail: String(err?.message || err) }
+        } finally {
+          if (timer !== undefined) clearTimeout(timer)
         }
-      }
-      return out
+      }))
+      return rows
     },
   }
 }

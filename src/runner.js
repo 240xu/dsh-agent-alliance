@@ -71,6 +71,16 @@ export function spawnCli({ argv, cwd, env, timeoutMs, signal }) {
       stderr += String(err && err.message ? err.message : err)
       settle(-1)
     })
-    child.on('close', (code) => settle(code === null ? -1 : code))
+    // `close` waits for every inherited stdio pipe to drain, so a surviving
+    // grandchild that keeps stdout open leaves this promise pending forever and
+    // permanently occupies a concurrency slot. `exit` fires when the direct
+    // child ends regardless; settle on whichever arrives first and give the
+    // pipes a short grace to flush afterwards.
+    let exitCode = null
+    child.on('exit', (code, signal) => {
+      exitCode = code === null ? -1 : code
+      setTimeout(() => settle(exitCode), 250).unref?.()
+    })
+    child.on('close', (code) => settle(code === null ? (exitCode ?? -1) : code))
   })
 }

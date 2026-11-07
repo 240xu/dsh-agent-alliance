@@ -332,23 +332,34 @@ export function registerHttp(webServer, { ctx, io, resolver, registry, config, h
   // provider, so results are cached for a short window: the panel polls this
   // route and must not fork a subprocess storm.
   const DETECT_TTL_MS = 30_000
-  let detectCache = { at: 0, rows: [] }
+  /** Cached probe: when it started, and the in-flight/settled promise itself. */
+  let detectCache = { at: 0, pending: undefined }
   /**
    * Probe provider availability, memoised for {@link DETECT_TTL_MS}.
+   *
+   * The cached value is the PROMISE, not the resolved rows: the panel can issue
+   * several requests before the first probe returns, and caching only the result
+   * would let each of them start its own `detectAll()` sweep — one `--version`
+   * subprocess per provider per request.
    * @param {boolean} [force] bypass the cache after a user-visible failure
    * @returns {Promise<Array<{id: string, available: boolean, detail?: string}>>} probe rows
    */
-  async function detectRows(force = false) {
+  function detectRows(force = false) {
     const now = Date.now()
-    if (!force && now - detectCache.at < DETECT_TTL_MS && detectCache.rows.length > 0) return detectCache.rows
-    let rows = []
-    try {
-      rows = typeof registry?.detectAll === 'function' ? await registry.detectAll() : []
-    } catch {
-      rows = []
+    if (!force && detectCache.pending !== undefined && now - detectCache.at < DETECT_TTL_MS) {
+      return detectCache.pending
     }
-    detectCache = { at: Date.now(), rows }
-    return rows
+    const pending = (async () => {
+      try {
+        return typeof registry?.detectAll === 'function' ? await registry.detectAll() : []
+      } catch {
+        return []
+      }
+    })()
+    detectCache = { at: Date.now(), pending }
+    // A failed probe must not stay cached as a rejection for its whole TTL.
+    pending.catch(() => { detectCache = { at: 0, pending: undefined } })
+    return pending
   }
 
   routes.set('/state', route(['GET'], async () => {
@@ -497,10 +508,11 @@ export function registerHttp(webServer, { ctx, io, resolver, registry, config, h
         // A mounted jobs service without a controller refuses the start. Fall
         // through to the inline path so the panel gets an answer, not a 500.
         jobId = undefined
-        const logger = ctx?.get?.('logger')
-        if (logger !== undefined && typeof logger?.warn === 'function') {
-          logger.warn('agent-alliance: panel roundtable running inline: ' + String(error?.message || error))
-        }
+        // `logger` is a Cordis built-in accessor, not a registered service, so
+        // ctx.get('logger') is undefined; only the property access works.
+        try {
+          ctx?.logger?.warn?.('agent-alliance: panel roundtable running inline: ' + String(error?.message || error))
+        } catch { /* a context without a logger must not fail the request */ }
       }
       if (jobId !== undefined) return { jobId }
     }

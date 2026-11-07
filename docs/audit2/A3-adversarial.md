@@ -4,19 +4,30 @@ Role: red-team the implementation of the 7 first-batch fixes **before** they are
 Repo `dsh-agent-alliance`, audited at `2d68e3f` (audit commit) with the Lead's fix work observed in
 progress. READ-ONLY: this file is the only artifact.
 
-**Status: complete.** Final state re-verified at `1b15214`.
+**Status: complete.** Final state re-verified through `e6054d7`; suite green (198 pass / 0 fail).
 
 ## Bottom line for the Lead
 
-**One defect blocks release: R6.3 — the `maxConcurrent` semaphore loses its accounting.** It is pre-existing, not
-introduced by any of the seven fixes, but **Fix 6 turns it into a user-visible regression**: the first roundtable
-after a promotion is bounded, the second runs at double the configured limit, and no test can see it because every
-existing concurrency test measures a single batch. Root cause is one missing `active += 1` on the promotion path
-(`src/tools.js:56-99`). Corrected implementation and two pinning tests are in "R6.3 — STILL OPEN at `1b15214`".
+**No open blocker.** The one blocking defect this audit found — **R6.3, the `maxConcurrent` semaphore losing its
+accounting** — was fixed in `e6054d7` with a cleaner shape than I proposed (the increment moved into `begin()`),
+and pinned by a regression test that I verified *fails* on the pre-fix code (`second batch reached 6, above the
+limit of 2`). R6.3 was pre-existing, but **Fix 6 had turned it into a user-visible regression**: the first
+roundtable after a promotion was bounded, the second ran at double the configured limit.
 
-**Everything else is either fixed or acceptable as-is.** Fixes 5, 6 and 7 landed with all three of the edge cases
-this audit flagged already handled; Fixes 1 and 3 were repaired on the strength of A2's findings; the residual
-items (R4.3 abort-result shape, R5.1 missing prefix test, R6.2 member-failure wording) are polish, not blockers.
+**Everything else is either fixed or acceptable as-is.** Fixes 5, 6 and 7 landed with all three edge cases this
+audit flagged already handled; Fixes 1 and 3 were repaired on the strength of A2's findings; Fix 2 landed and then
+made fail-closed. Residual polish, none blocking: R4.3 (abort rejection is a plain `Error` rather than the
+framework's `AbortError`, so a cancellation reads as a failure in the transcript), R5.1 (no test pins the
+`startsWith` prefix invariant the round-2 fix exists for), R6.2 (a gate refusal is still attributed to the member
+as a failure), and R1.4 (`jobs.start()` returning a non-string is treated as a started job).
+
+**One adjacent defect surfaced during final verification** and is worth more than its severity suggests:
+`owner: exec?.agent?.sessionId` read a field the `Agent` interface does not have
+(`packages/core/agent/src/types.ts:15-18` — only `readonly id: SessionId`). Every background job was therefore
+**unowned**: not cancelled on Agent disposal, visible to every caller through `jobs.list(undefined)`, and never
+producing a completion notice. The tests could not see it because the fake `exec.agent` invented a `sessionId`
+field. Same root cause as the dead `ctx.get('logger')` read: fakes more capable than the host. Fixed in the
+working tree; the durable lesson is in the final section.
 
 ## What was actually reviewed
 
@@ -1515,3 +1526,98 @@ Three of my own claims did not survive verification, and are corrected in place 
 
 R6.3, R7.2/R7.3, R4.2, R5.1, R5.2 and R6.1 all held up under verification, three of them reproduced as executable
 failures rather than argued from reading.
+
+---
+
+## Post-close observation: R6.3 was fixed, and one adjacent defect surfaced
+
+### The gate fix (`e6054d7`) is correct — and simpler than my proposal
+
+The Lead's version moves the increment into `begin()`:
+
+```js
+begin() {
+  if (started) return
+  started = true
+  active += 1                     // every start counts, fast path or promoted
+  …
+  pending.then(resolveRun, rejectRun).finally(() => { active -= 1; if (queue.length) queue.shift().begin() })
+}
+…
+if (active < limit) { entry.begin(); return }        // no increment here any more
+queue.push(entry)
+```
+
+This is **better than the fix I proposed**. My `promote()`-with-increment version needed a second `queued` flag to
+stop an aborted queued entry from stranding accounting; putting the increment in `begin()` makes that
+unnecessary, because an entry that is aborted while queued never calls `begin()` and therefore never counts.
+Verified against the committed body (`/tmp/verify-lead-fix.mjs`):
+
+```
+limit=1: peak over 6 batches = 1 OK
+limit=2: peak over 6 batches = 2 OK
+limit=3: peak over 6 batches = 3 OK
+queued abort: aborted while queued (maxConcurrent=1)
+gate usable after queued abort: works
+mixed: 0,1,A,A,4,5,6,7,8,9 -> no wedging
+```
+
+And the regression test genuinely fails without the fix — proven by temporarily reverting only the two moved lines
+against the committed test:
+
+```
+not ok 27 - the concurrency limit holds across repeated batches, not just the first
+  error: 'second batch reached 6, above the limit of 2'
+```
+
+That is the exact signal my R6.3 predicted (`peak = 4` in my probe; 6 here because the test uses six calls). The
+defect is closed with a test that would reopen it.
+
+### Adjacent defect found while verifying: `exec.agent.sessionId` does not exist
+
+Not in my seven, and not a consequence of any fix, but it was live at `1b15214` and is the same family as the
+`ctx.logger` mistake in R1.1: **reading a property the host interface does not have.**
+
+`packages/core/agent/src/types.ts:15-18` declares:
+
+```ts
+export interface Agent {
+  /** Session-backed Agent identity. */
+  readonly id: SessionId
+}
+```
+
+There is **no `sessionId` field**. Yet both background job call sites read it:
+
+```js
+owner: exec?.agent?.sessionId,      // undefined at runtime
+```
+
+Consequences, all silent because `owner: undefined` is a *valid* value meaning "unowned":
+
+- the job is not tied to the Agent, so nothing cancels it on Agent disposal;
+- it appears in `jobs.list(undefined)` for every caller — the panel and every other session can read and kill it;
+- the owner-scoped completion notice path never fires, so the model is not told the job finished;
+- `resolveOwner(undefined)` returns `undefined`, which also means the missing-controller check
+  (`servesOwner(undefined)`) consults only the **global** layer, quietly changing which compositions work.
+
+This is exactly the failure mode `dsh-jobs-local/lib/index.js:500-504` documents (`job.owner === undefined` is the
+shared unowned bucket). The tests did not catch it because the fake `exec` in `tests/tools.test.js` *invented* a
+`sessionId` field (`{ id: 'agent-1', sessionId: 'session-42' }`) — a fake that does not match the real interface
+made the bug invisible, and the assertion `typeof spec.owner === 'string'` passed because both fields were present
+in the fake.
+
+**The test fix matters more than the code fix.** The honest fake is `{ id: 'session-42' }`, with an assertion that
+the owner equals it; that is what pins the field name rather than the value:
+
+```js
+const exec = { agent: { id: 'session-42' }, signal: new AbortController().signal }
+…
+assert.equal(spec.owner, 'session-42', 'owner must come from agent.id')
+```
+
+**Lesson worth carrying into the remaining work**: three of the defects in this round (`ctx.get('logger')`,
+`agent.sessionId`, and the `jobs.start` blanket catch) share one root — the tests' fakes were more capable than the
+real host. A fake `ctx` that answers `get('logger')`, or a fake `exec.agent` that carries `sessionId`, removes the
+only signal that would have caught the mistake. Every fake in `tests/` should be checked against the corresponding
+`d.ts` before it is trusted as evidence.

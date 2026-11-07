@@ -61,3 +61,26 @@ test('a zero exit still returns the parsed answer', async () => {
   const result = await provider.dispatch({ prompt: 'hi', timeoutMs: 1000 })
   assert.match(result.text, /the answer/)
 })
+
+test('detectAll probes in parallel and stays inside its budget', async () => {
+  const { createRegistry, defineProvider } = await import('../src/provider/types.js')
+  const slow = (id, ms) => defineProvider({
+    id,
+    label: id,
+    async dispatch() { return { text: '' } },
+    // A CLI that hangs on --version must not hold the whole answer: serial
+    // probing would reach the sum of every timeout.
+    detect: () => new Promise((resolve) => setTimeout(() => resolve({ available: true }), ms)),
+  })
+  const registry = createRegistry([slow('a', 400), slow('b', 400), slow('c', 400)])
+  const started = Date.now()
+  const rows = await registry.detectAll({ budgetMs: 100 })
+  const elapsed = Date.now() - started
+
+  assert.equal(rows.length, 3)
+  assert.ok(elapsed < 300, `probe took ${elapsed}ms; a serial probe would approach 1200ms`)
+  for (const row of rows) {
+    assert.equal(row.available, false, 'an unfinished probe is reported unknown, not available')
+    assert.match(String(row.detail), /timed out/)
+  }
+})

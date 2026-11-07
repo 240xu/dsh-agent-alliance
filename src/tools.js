@@ -185,14 +185,26 @@ function startJob(ctx, spec) {
  * @returns {{ cancel(reason?: string): void, done: Promise<object> }} JobHooks
  */
 function jobHooks(controller, produced) {
+  // A producer that never observes its signal would otherwise pin the job in
+  // `stopping` forever: the record never settles, `remove()` refuses a live
+  // job, and the owner's slot is never released. Race the settled work against
+  // the cancellation so a cancel always reaches a terminal state.
+  let cancelled
+  const cancelledPromise = new Promise((resolve) => {
+    cancelled = () => resolve({ status: 'killed', detail: 'cancelled before the producer settled' })
+  })
   return {
     cancel(reason) {
       controller.abort(new Error(reason || 'cancelled'))
+      cancelled()
     },
-    done: Promise.resolve(produced).then(
-      (outcome) => outcome,
-      (error) => ({ status: 'failed', detail: String(error?.message || error).slice(-500) }),
-    ),
+    done: Promise.race([
+      Promise.resolve(produced).then(
+        (outcome) => outcome,
+        (error) => ({ status: 'failed', detail: String(error?.message || error).slice(-500) }),
+      ),
+      cancelledPromise,
+    ]),
   }
 }
 
@@ -360,7 +372,7 @@ export function registerTools(ctx, { resolver, registry, config, home, io }) {
       const jobId = startJob(ctx, {
         kind: 'agent-alliance',
         label,
-        owner: exec?.agent?.sessionId,
+        owner: exec?.agent?.id,
         outputLimitBytes: 65536,
         run(job) {
           startedAt = Date.now()
@@ -467,7 +479,7 @@ export function registerTools(ctx, { resolver, registry, config, home, io }) {
       const jobId = startJob(ctx, {
         kind: 'agent-alliance',
         label: 'roundtable: ' + labelOf(args.prompt),
-        owner: exec?.agent?.sessionId,
+        owner: exec?.agent?.id,
         outputLimitBytes: 262144,
         run(job) {
           const produced = runOnce(controller.signal).then((result) => {

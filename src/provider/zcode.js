@@ -27,10 +27,14 @@ export function makeZcodeProvider({ deps = {}, config = {}, openDb } = {}) {
   const open = openDb || deps.openDb || null
 
   function expandTemplate(tpl, { prompt, resumeSessionId, cwd }) {
+    // A function replacement is mandatory here: `String.replaceAll` expands
+    // `$&`, `$$`, `$\`` and `$'` inside a STRING replacement, so a prompt
+    // containing "$&" would be rewritten into the matched token instead of the
+    // user's text.
     return tpl
-      .replaceAll('{prompt}', shellQuote(prompt))
-      .replaceAll('{session}', resumeSessionId ? shellQuote(resumeSessionId) : '')
-      .replaceAll('{cwd}', shellQuote(cwd || '.'))
+      .replaceAll('{prompt}', () => shellQuote(prompt))
+      .replaceAll('{session}', () => (resumeSessionId ? shellQuote(resumeSessionId) : ''))
+      .replaceAll('{cwd}', () => shellQuote(cwd || '.'))
   }
 
   async function detect() {
