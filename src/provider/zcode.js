@@ -54,8 +54,9 @@ export function makeZcodeProvider({ deps = {}, config = {}, openDb } = {}) {
     const script = expandTemplate(config.commandTemplate, { prompt, resumeSessionId, cwd })
     const r = await spawnCli({ argv: ['sh', '-c', script], cwd, timeoutMs, signal })
     const text = String(r.stdout || '').trim()
-    if (r.code !== 0 && !text) {
-      throw new Error('zcode dispatch 失败 (exit ' + r.code + '): ' + (r.stderr || '').slice(-400))
+    // A non-zero exit is a failed run even when the command printed something.
+    if (r.code !== 0) {
+      throw new Error('zcode dispatch 失败 (exit ' + r.code + '): ' + (r.stderr || r.stdout).slice(-400))
     }
     return { text, externalSessionId: undefined, raw: r }
   }

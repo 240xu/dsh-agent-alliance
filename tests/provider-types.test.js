@@ -26,3 +26,38 @@ test('registry：list/get/detectAll', async () => {
   assert.equal(sb.available, true)
   assert.equal(sb.version, '1')
 })
+
+test('a non-zero CLI exit fails the dispatch even when the CLI printed text', async () => {
+  // These CLIs write their own error messages to stdout ("quota exceeded",
+  // "429 Too Many Requests"). Treating printed text as success makes a broken
+  // member look like a peer with an opinion at the roundtable layer.
+  const { makeCodexProvider } = await import('../src/provider/codex.js')
+  const provider = makeCodexProvider({
+    config: {},
+    deps: {
+      spawnCli: async () => ({ code: 1, stdout: 'Error: quota exceeded', stderr: '' }),
+      paths: { codexJs: '/bin/false' },
+    },
+  })
+  await assert.rejects(
+    () => provider.dispatch({ prompt: 'hi', timeoutMs: 1000 }),
+    (error) => {
+      assert.match(String(error.message), /exit 1/)
+      assert.match(String(error.message), /quota exceeded/)
+      return true
+    },
+  )
+})
+
+test('a zero exit still returns the parsed answer', async () => {
+  const { makeCodexProvider } = await import('../src/provider/codex.js')
+  const provider = makeCodexProvider({
+    config: {},
+    deps: {
+      spawnCli: async () => ({ code: 0, stdout: 'the answer', stderr: '' }),
+      paths: { codexJs: '/bin/true' },
+    },
+  })
+  const result = await provider.dispatch({ prompt: 'hi', timeoutMs: 1000 })
+  assert.match(result.text, /the answer/)
+})

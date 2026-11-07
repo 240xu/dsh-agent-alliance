@@ -60,6 +60,65 @@ export function saveLedger(home, ledger) {
 }
 
 /**
+ * Per-ledger-path serialisation of the read-modify-write that records an
+ * import. `saveLedger` is atomic per write, but two concurrent importers that
+ * both read the ledger before either writes will each persist only their own
+ * entry, so the other import is forgotten. A forgotten entry defeats the
+ * idempotency check and the same external session is imported twice.
+ *
+ * Writes are keyed by absolute ledger path, so imports into different DSH homes
+ * stay independent.
+ * @type {Map<string, Promise<unknown>>}
+ */
+const ledgerWrites = new Map()
+
+/**
+ * Imports currently running, keyed by ledger path and external session key.
+ *
+ * Two concurrent imports of the SAME external session must not both reach
+ * `sessionPersistence.create`: the loser would write a duplicate DSH session
+ * before the ledger recorded the winner. The second caller instead waits for
+ * the first and then reports `already-imported`.
+ * @type {Map<string, Promise<unknown>>}
+ */
+const inflightImports = new Map()
+
+/**
+ * Apply one mutation to the ledger under an exclusive per-path lock.
+ *
+ * The ledger is re-read inside the lock immediately before writing, so a
+ * mutation always lands on the newest committed state rather than on a snapshot
+ * taken before a long import. `mutate` returns the value to record, or
+ * `undefined` to leave the ledger untouched.
+ * @param {string} home DSH home directory
+ * @param {(ledger: object) => { key: string, value: object } | undefined} mutate
+ *   pure mutation describing the entry to store
+ * @returns {Promise<object|undefined>} the value recorded, when any
+ */
+export async function recordLedgerEntry(home, mutate) {
+  const path = ledgerPath(home)
+  const previous = ledgerWrites.get(path) ?? Promise.resolve()
+  const next = previous.then(() => {
+    const ledger = loadLedger(home)
+    const change = mutate(ledger)
+    if (change === undefined) return undefined
+    ledger[change.key] = change.value
+    saveLedger(home, ledger)
+    return change.value
+  })
+  // Queue a settled-always tail so one rejected write cannot break the chain
+  // for later callers, and so the map entry identity stays comparable.
+  const tail = next.then(() => undefined, () => undefined)
+  ledgerWrites.set(path, tail)
+  try {
+    return await next
+  } finally {
+    // Drop the map entry once this was the last write queued for the path.
+    if (ledgerWrites.get(path) === tail) ledgerWrites.delete(path)
+  }
+}
+
+/**
  * Resolve one optional Cordis service.
  *
  * `ctx.get(name)` is the portable read: a plugin that does not declare the
@@ -151,7 +210,7 @@ async function attachWorkspace(ctx, sessionId, cwd) {
  * @param {string} [options.home] 台账根目录
  * @returns {Promise<{status: 'imported'|'already-imported'|'skipped', dshSessionId?: string, turns?: number, title?: string|null, reason?: string}>}
  */
-export async function importOne(ctx, { registry, provider: providerId, externalId, home }) {
+async function importOneUnlocked(ctx, { registry, provider: providerId, externalId, home }) {
   if (ctx === undefined || ctx === null) throw new Error('importOne 需要宿主 context')
   const provider = registry.get(providerId)
   if (provider === undefined || provider === null || typeof provider.exportSession !== 'function') {
@@ -202,20 +261,65 @@ export async function importOne(ctx, { registry, provider: providerId, externalI
   await warmProjection(ctx, dshSessionId)
   await attachWorkspace(ctx, dshSessionId, cwd)
 
-  ledger[externalKey] = {
-    dshSessionId,
-    provider: String(providerId),
-    externalId: String(externalId),
-    importedAt: Date.now(),
-    turns: exported.turns.length,
-    title: typeof exported.title === 'string' ? exported.title : null,
-  }
-  saveLedger(home, ledger)
+  // Record under the ledger lock so a concurrent import cannot overwrite this
+  // entry with a snapshot it read before the session above was written.
+  await recordLedgerEntry(home, (latest) => {
+    const existing = latest[externalKey]
+    if (existing !== undefined && existing !== null && typeof existing.dshSessionId === 'string') {
+      return undefined
+    }
+    return {
+      key: externalKey,
+      value: {
+        dshSessionId,
+        provider: String(providerId),
+        externalId: String(externalId),
+        importedAt: Date.now(),
+        turns: exported.turns.length,
+        title: typeof exported.title === 'string' ? exported.title : null,
+      },
+    }
+  })
 
   return {
     status: 'imported',
     dshSessionId,
     turns: exported.turns.length,
     title: typeof exported.title === 'string' ? exported.title : null,
+  }
+}
+
+/**
+ * Import one external session, serialised per external key.
+ *
+ * The wrapper exists so two concurrent imports of the same external session
+ * cannot both create a DSH session: the second waits for the first, then reads
+ * the ledger and reports the winner's id. Distinct sessions still import in
+ * parallel, and their ledger writes are merged under {@link recordLedgerEntry}.
+ * @param {object} ctx host context
+ * @param {object} options registry, provider id, external id, and ledger home
+ * @returns {Promise<{status: 'imported'|'already-imported'|'skipped', dshSessionId?: string, turns?: number, title?: string|null, reason?: string}>} import outcome
+ */
+export async function importOne(ctx, options) {
+  const home = options.home
+  const key = ledgerPath(home) + '|' + sourceKey(options.provider, String(options.externalId))
+  const running = inflightImports.get(key)
+  if (running !== undefined) {
+    // Another import of this exact session is already writing it.
+    try {
+      await running
+    } catch { /* the winner failed; fall through and retry ourselves */ }
+    const settled = loadLedger(home)[sourceKey(options.provider, String(options.externalId))]
+    if (settled !== undefined && settled !== null && typeof settled.dshSessionId === 'string' && settled.dshSessionId !== '') {
+      return { status: 'already-imported', dshSessionId: settled.dshSessionId }
+    }
+  }
+  const work = importOneUnlocked(ctx, options)
+  const tail = work.then(() => undefined, () => undefined)
+  inflightImports.set(key, tail)
+  try {
+    return await work
+  } finally {
+    if (inflightImports.get(key) === tail) inflightImports.delete(key)
   }
 }

@@ -50,7 +50,10 @@ export function makeOpencodeProvider({ deps = {}, config = {} } = {}) {
     const env = { TMPDIR: prefix() + '/tmp' }
     const r = await spawnCli({ argv, cwd, env, timeoutMs, signal })
     const parsed = parseOpencodeEvents(r.stdout)
-    if (r.code !== 0 && !parsed.text) {
+    // Non-zero exit wins over printed text: `--format json` emits text parts for
+    // the CLI's own error messages, and a roundtable must not count a failed
+    // member as a peer that produced an opinion.
+    if (r.code !== 0) {
       throw new Error('opencode dispatch 失败 (exit ' + r.code + '): ' + (r.stderr || r.stdout).slice(-400))
     }
     return { text: parsed.text, externalSessionId: parsed.sessionId, raw: r }

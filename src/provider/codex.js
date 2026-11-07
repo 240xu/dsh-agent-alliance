@@ -50,7 +50,11 @@ export function makeCodexProvider({ deps = {}, config = {} } = {}) {
     }
     const r = await spawnCli({ argv, timeoutMs, signal })
     const parsed = parseCodexOutput(r.stdout)
-    if (r.code !== 0 && !parsed.text) {
+    // A non-zero exit is a failed run even when the CLI printed text: these
+    // CLIs write their own error messages to stdout ("quota exceeded",
+    // "429 Too Many Requests"), and returning that as a successful answer makes
+    // the roundtable count a broken member as a peer with an opinion.
+    if (r.code !== 0) {
       throw new Error('codex dispatch 失败 (exit ' + r.code + '): ' + (r.stderr || r.stdout).slice(-400))
     }
     return { text: parsed.text, externalSessionId: parsed.sessionId, raw: r }

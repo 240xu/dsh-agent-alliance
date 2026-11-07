@@ -83,3 +83,58 @@ both are handed to `ctx.effect` as the effect result, so Cordis unwinds them in 
 order on fiber dispose. The panel route is additionally wrapped in
 `ctx.inject(['webServer'], …)` + a nested `webCtx.effect(...)`, so a fiber that is
 disposed while `webServer` is still arriving runs no registration at all.
+
+### F2 — HMR-shaped reload: **CLEAN**; failed mid-registration start is also rolled back (no finding)
+
+**Severity:** none. **Verdict:** verified clean by execution.
+
+Two reload shapes were exercised:
+
+**(a) Dispose-then-immediately-re-apply** (unload not awaited, as an HMR swap would do),
+three times. The new fiber's registrations are visible immediately and the old fiber
+teardown does not strip them:
+
+```
+cycle 1 before={"tools":6,"routes":1} duringReload={"tools":6,"routes":1} afterAwait={"tools":6,"routes":1}
+cycle 1 after dispose: tools=0 routes=0
+cycle 2 before={"tools":6,"routes":1} duringReload={"tools":6,"routes":1} afterAwait={"tools":6,"routes":1}
+cycle 2 after dispose: tools=0 routes=0
+cycle 3 before={"tools":6,"routes":1} duringReload={"tools":6,"routes":1} afterAwait={"tools":6,"routes":1}
+cycle 3 after dispose: tools=0 routes=0
+```
+
+**(b) Overlapping fibers of the same plugin.** Two `ctx.plugin(alliance, …)` calls
+without a dispose between them **do** throw:
+
+```
+Error: tool "agent_dispatch" is already registered (for a per-agent variant, register
+through that agent's `agent.ctx` instead)
+    at registerTools (.../src/tools.js:272)
+    at index.js:142
+```
+
+This is **not** a plugin defect: per-fiber ownership is the Cordis contract, and two
+*silently successful* mounts would be the bug. The important part is what is left
+behind when a start fails after several registrations already happened. Forcing a
+failure at the third tool (pre-registering `agent_roundtable`):
+
+```bash
+cd /tmp/b2 && node repro2b-partial.mjs
+```
+
+```
+baseline tools (with blocker): ["agent_roundtable"]
+mount failed as designed: tool "agent_roundtable" is already registered (...)
+tools AFTER failed mount: ["agent_roundtable"]
+routes AFTER failed mount: []
+plugin leaked registrations? false
+after removing the blocker: []
+clean mount after cleanup: tools=6 routes=1
+final: tools=[] routes=0
+```
+
+So a half-finished `apply()` unwinds everything it registered — the fiber rolls back
+on startup error, and the six `ctx.tools.register(...)` calls are effects of that
+fiber. **No stale closure survives a reload:** the handlers read `ctx` at call time
+through `serviceOf(ctx, …)`, and after disposal `ctx.get('jobs')` resolves to
+`undefined` rather than throwing, which is exactly what the fallback paths expect.

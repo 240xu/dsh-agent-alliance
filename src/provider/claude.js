@@ -45,13 +45,13 @@ export function makeClaudeProvider({ deps = {}, config = {} } = {}) {
     if (effModel) argv.push('--model', String(effModel))
     // Termux 无 /tmp，grun 二进制会写 /tmp/claude-*：强制 TMPDIR 归一
     const r = await spawnCli({ argv, cwd, timeoutMs, signal, env: { TMPDIR: prefix() + '/tmp' } })
-    if (r.code !== 0 && !r.stdout.trim()) {
-      throw new Error('claude dispatch 失败 (exit ' + r.code + '): ' + (r.stderr || '').slice(-400))
-    }
-    const parsed = parseClaudeStreamJson(r.stdout)
-    if (!parsed.text && r.code !== 0) {
+    // Non-zero exit wins over printed text. stream-json collects any assistant
+    // text block, including one whose content is "API Error: 429", so a failed
+    // run would otherwise resolve as a successful answer.
+    if (r.code !== 0) {
       throw new Error('claude dispatch 失败 (exit ' + r.code + '): ' + (r.stderr || r.stdout).slice(-400))
     }
+    const parsed = parseClaudeStreamJson(r.stdout)
     return { text: parsed.text, externalSessionId: parsed.sessionId, raw: r }
   }
 

@@ -629,3 +629,36 @@ test('a turn stream with no user text still produces a readable session', async 
     }
   }
 })
+
+test('concurrent imports neither lose ledger entries nor duplicate a session', async () => {
+  const { importOne, loadLedger } = await import('../src/importer/persist.js')
+  const { mkdtempSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+
+  const makeCtx = (created) => ({
+    get: (name) => name === 'sessionPersistence'
+      ? { create: async (header) => { created.push(header.id); return { append: async () => {}, flush: async () => {}, close: async () => {} } } }
+      : undefined,
+  })
+  const registry = { get: () => ({ exportSession: async () => ({ title: 'T', createdAt: 1, cwd: '/tmp', turns: [{ user: 'u', assistant: 'a' }] }) }) }
+
+  // Distinct external sessions must all keep their ledger entry. A lost entry
+  // defeats the idempotency check and the same session is imported again later.
+  const homeA = mkdtempSync(join(tmpdir(), 'alliance-ledger-'))
+  const createdA = []
+  const ids = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']
+  await Promise.all(ids.map((id) => importOne(makeCtx(createdA), { registry, provider: 'p', externalId: id, home: homeA })))
+  assert.equal(Object.keys(loadLedger(homeA)).length, ids.length, 'every concurrent import must be recorded')
+
+  // The same external session imported concurrently must create exactly one
+  // DSH session; every other caller reports already-imported.
+  const homeB = mkdtempSync(join(tmpdir(), 'alliance-ledger-dup-'))
+  const createdB = []
+  const results = await Promise.all(
+    Array.from({ length: 6 }, () => importOne(makeCtx(createdB), { registry, provider: 'p', externalId: 'dup', home: homeB })),
+  )
+  assert.equal(createdB.length, 1, 'a duplicate import must not write a second session')
+  assert.equal(results.filter((r) => r.status === 'imported').length, 1)
+  assert.equal(results.filter((r) => r.status === 'already-imported').length, 5)
+})
