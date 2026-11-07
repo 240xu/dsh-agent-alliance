@@ -47,6 +47,13 @@ function createSemaphore(limit) {
   const queue = []
   return {
     run(signal, fn) {
+      // A caller that already cancelled must not start real external work. The
+      // queued branch below checks this too, but the fast path took a free slot
+      // and launched fn() regardless, so a cancelled call still spawned a CLI
+      // or an official subagent process.
+      if (signal?.aborted === true) {
+        return Promise.reject(new Error('aborted before start (maxConcurrent=' + limit + ')'))
+      }
       return new Promise((resolveRun, rejectRun) => {
         let started = false
         const entry = {
@@ -116,14 +123,28 @@ function serviceOf(ctx, service) {
 
 /**
  * Start one background job through the jobs service.
- * @param {object} ctx plugin context; `jobs` may be absent
+ *
+ * `jobs.start()` throws when the composition mounts `ctx.jobs` but no job
+ * controller serves the owner: `dsh-jobs-local` requires a controller, which
+ * only `dsh-tool-jobs` or an equivalent `attachController` caller provides.
+ * Callers treat `undefined` as "run this inline", so a refused start must
+ * degrade instead of escaping as an exception.
+ * @param {object} ctx plugin context; `jobs` may be absent or unusable
  * @param {object} spec `{ kind, label, owner?, outputLimitBytes?, run(job) }`
- * @returns {string|undefined} the JobId string, or undefined when no jobs service is mounted
+ * @returns {string|undefined} the JobId string, or undefined when the job cannot start
  */
 function startJob(ctx, spec) {
   const jobs = serviceOf(ctx, 'jobs')
   if (jobs === undefined || jobs === null || typeof jobs.start !== 'function') return undefined
-  return jobs.start(spec)
+  try {
+    return jobs.start(spec)
+  } catch (error) {
+    const logger = serviceOf(ctx, 'logger')
+    if (logger !== undefined && typeof logger.warn === 'function') {
+      logger.warn('agent-alliance: background job unavailable, running inline: ' + String(error?.message || error))
+    }
+    return undefined
+  }
 }
 
 /**

@@ -151,11 +151,18 @@ export function convertToDshEvents({ id, createdAt, title, turns } = {}) {
     push('turn/end', { turn, reason: { kind: 'completed' } })
   }
 
-  push('session/title', {
-    title: typeof title === 'string' && title.trim().length > 0 ? title : '导入会话',
-    messageSeqs: userMessageSeqs,
-    source: { kind: 'fallback' },
-  })
+  // `session/title.messageSeqs` obeys `(messageSeqs.length === 0) === (source.kind === 'user')`
+  // in `dsh-session-format-v3-to-v4` `titleSources()`. A derived title (fallback)
+  // must therefore cite at least one user message, while an explicit user rename
+  // carries none. A turn stream with no user text has nothing to derive a title
+  // from, so it gets no title event at all rather than one the reader rejects.
+  if (userMessageSeqs.length > 0) {
+    push('session/title', {
+      title: typeof title === 'string' && title.trim().length > 0 ? title : '导入会话',
+      messageSeqs: userMessageSeqs,
+      source: { kind: 'fallback' },
+    })
+  }
 
   return events
 }

@@ -286,6 +286,14 @@ Three rules here are enforced by the installed validators and are not stylistic:
 Finally one `session/title` `{ title, messageSeqs, source: { kind: 'fallback' } }`,
 where `messageSeqs` lists the `user/message` seqs.
 
+`session/title` obeys a strict invariant in `dsh-session-format-v3-to-v4`
+`titleSources()`: `(messageSeqs.length === 0) === (source.kind === 'user')`. So a
+derived (fallback) title MUST cite at least one user message, and an explicit
+user rename must cite none. A turn stream that yields no user text has nothing
+to derive a title from: emit **no** `session/title` event at all. Emitting a
+fallback title with an empty `messageSeqs` is rejected on read, which would
+write an import that can never be reopened.
+
 `importOne(ctx, { registry, provider, externalId, home })` writes through the current
 host API:
 

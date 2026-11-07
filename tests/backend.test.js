@@ -144,7 +144,7 @@ test('falls back to CLI when the parent is not a live agent', async () => {
   assert.equal(calls.start.length, 0)
 })
 
-test('resumeSessionId is rejected on the subagent path and dispose still runs exactly once', async () => {
+test('resumeSessionId is rejected before any child is started', async () => {
   const { service, calls } = fakeSubagents({ names: ['codex'] })
   const { parent, agents } = fakeParent()
   const resolver = createBackendResolver({
@@ -163,7 +163,11 @@ test('resumeSessionId is rejected on the subagent path and dispose still runs ex
       return true
     },
   )
-  assert.equal(calls.dispose, 1)
+  // A resume request must cost nothing: no child is spawned, so there is
+  // nothing to dispose. Guarding after startActivation used to bill the caller
+  // for a full process start just to produce this error.
+  assert.equal(calls.start.length, 0, 'startActivation must not run for a rejected resume request')
+  assert.equal(calls.dispose, 0)
 })
 
 test('dispose runs exactly once when the activation result rejects', async () => {

@@ -598,3 +598,34 @@ test('ledgerPath：默认落在 <home>/agent-alliance/imports.json', () => {
 test('sourceKey：provider:externalId', () => {
   assert.equal(sourceKey('claude', 'abc'), 'claude:abc')
 })
+
+test('a turn stream with no user text still produces a readable session', async () => {
+  const { convertToDshEvents } = await import('../src/importer/convert.js')
+  // `session/title` obeys (messageSeqs empty) === (source.kind === 'user').
+  // Emitting a derived title with zero citations is rejected by the v4 reader,
+  // which would write an import that can never be reopened.
+  const cases = [
+    [],
+    [{ assistant: 'only an answer' }],
+    [{ user: '', assistant: 'x' }],
+    [null],
+    [{ tools: [{ name: 'bash', args: {}, resultText: 'r' }] }],
+  ]
+  for (const turns of cases) {
+    const events = convertToDshEvents({ id: 's1', cwd: '/tmp', createdAt: 1, title: 'T', turns })
+    const title = events.find((event) => event.type === 'session/title')
+    if (title !== undefined) {
+      assert.ok(
+        Array.isArray(title.data.messageSeqs) && title.data.messageSeqs.length > 0,
+        'a derived title must cite at least one user message',
+      )
+      assert.notEqual(title.data.source.kind, 'user', 'a derived title is not a user rename')
+    }
+    // Every emitted title must be self-consistent with its own citations.
+    for (const event of events) {
+      if (event.type !== 'session/title') continue
+      const empty = event.data.messageSeqs.length === 0
+      assert.equal(empty, event.data.source.kind === 'user')
+    }
+  }
+})

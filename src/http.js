@@ -431,28 +431,39 @@ export function registerHttp(webServer, { ctx, io, resolver, registry, config, h
     const jobs = jobsOf(ctx)
     if (jobs !== null && typeof jobs.start === 'function') {
       const controller = new AbortController()
-      const jobId = jobs.start({
-        kind: JOB_KIND,
-        label,
-        run(job) {
-          const done = Promise.resolve()
-            .then(() => produce(controller.signal))
-            .then((result) => {
-              const text = formatRoundtableText(result)
-              job.append(text)
-              return { status: 'completed', result: text }
-            }, (error) => ({ status: 'failed', detail: String(error?.message || error).slice(-500) }))
-          return {
-            cancel(reason) {
-              controller.abort(new Error(reason || 'cancelled from the panel'))
-            },
-            done,
-          }
-        },
-      })
-      return { jobId }
+      let jobId
+      try {
+        jobId = jobs.start({
+          kind: JOB_KIND,
+          label,
+          run(job) {
+            const done = Promise.resolve()
+              .then(() => produce(controller.signal))
+              .then((result) => {
+                const text = formatRoundtableText(result)
+                job.append(text)
+                return { status: 'completed', result: text }
+              }, (error) => ({ status: 'failed', detail: String(error?.message || error).slice(-500) }))
+            return {
+              cancel(reason) {
+                controller.abort(new Error(reason || 'cancelled from the panel'))
+              },
+              done,
+            }
+          },
+        })
+      } catch (error) {
+        // A mounted jobs service without a controller refuses the start. Fall
+        // through to the inline path so the panel gets an answer, not a 500.
+        jobId = undefined
+        const logger = ctx?.get?.('logger')
+        if (logger !== undefined && typeof logger?.warn === 'function') {
+          logger.warn('agent-alliance: panel roundtable running inline: ' + String(error?.message || error))
+        }
+      }
+      if (jobId !== undefined) return { jobId }
     }
-    // No jobs service: run inline so the panel gets an answer instead of an id.
+    // No usable jobs service: run inline so the panel gets an answer instead of an id.
     const result = await produce(new AbortController().signal)
     return { jobId: null, text: formatRoundtableText(result) }
   }))

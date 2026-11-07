@@ -225,6 +225,11 @@ function subagentBackend({ ctx, config, providerId, providerName, label, parent 
       const started = Date.now()
       const text = toPromptText(request.prompt)
       const signal = request.signal ?? new AbortController().signal
+      // Reject a resume request before starting anything: official providers are
+      // one-shot, and startActivation spawns a billed child plus a protocol
+      // handshake. Guarding after it would charge the caller for an error that
+      // was knowable up front, and a missing payload would mask the real reason.
+      if (hasResumeId(request.resumeSessionId)) throw resumeRejection(providerId, providerName)
       const route = subagentRoute(ctx, config, providerId, parent)
       if (route === undefined) {
         throw new Error(OFFICIAL_DETAIL + ' "' + providerName + '" is no longer registered')
@@ -242,10 +247,6 @@ function subagentBackend({ ctx, config, providerId, providerName, label, parent 
       })
       let primary
       try {
-        // 先挂上 no-op rejection 消费者：resumeSessionId 分支会丢弃 result，不能让一个
-        // 迟早会 reject 的 promise 变成未处理拒绝（同 workflow-ptc 的 contain）。
-        activation.result.catch(() => {})
-        if (hasResumeId(request.resumeSessionId)) throw resumeRejection(providerId, providerName)
         const result = await activation.result
         const outputText = isObject(result) ? blocksText(result.output) : ''
         const stopReason = isObject(result) ? result.stopReason : undefined
