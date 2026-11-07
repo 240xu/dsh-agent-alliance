@@ -38,7 +38,7 @@ bundle 一旦启用，`cordis.patch.yml:1-9` 会插入两行：
 preset**, including minimal."
 
 而我们的 `src/config.js:19` 默认 `codex: { enabled: true, subagentProvider: 'codex' }`，
-于是 `src/backend.js:329-338` 的 `resolve({provider:'codex', parent})` 在有活体 parent 时
+于是 `src/backend.js:367-376` 的 `resolve({provider:'codex', parent})` 在有活体 parent 时
 **返回 `kind:'subagent'`**，走同一个 `ctx.subagents` provider。
 
 ⇒ **模型手里有两个工具，调用的是同一个 Codex provider、同一个 `ctx.subagents`、
@@ -71,7 +71,7 @@ it finishes.**"
 |---|---|---|
 | 谁在 system prompt 里被点名 | ✅ 有专门章节 | ❌ **完全没有** |
 | 返回时机 | 立刻返回 id，稍后通知 | 阻塞到有答案 |
-| delivery | `'parent'`（`tool-subagent:339`） | `'caller'`（`backend.js:248`） |
+| delivery | `'parent'`（`tool-subagent:339`） | `'caller'`（`backend.js:292`） |
 | 并发池 | `maxActiveSubagents`（默认 8） | 我们的 `maxConcurrent`（默认 3） |
 
 **"plugin 的 system-prompt-free path 让哪个不可发现"** —— 答案是 `agent_dispatch`。
@@ -138,7 +138,7 @@ recommended default (CLI-only)
 
 ### 判决：**全部字段对齐（含一处自我撤回）；唯一实质问题是 `model` 被静默忽略**
 
-我们的调用（`src/backend.js:242-262`）：
+我们的调用（`src/backend.js:280-306`）：
 ```js
 const activation = await route.service.startActivation({
   provider: providerName,
@@ -183,7 +183,7 @@ private notifySettlement(activation, terminal) {
 
 #### ✅ `cwd` 我一度怀疑有缺陷，核对后**撤回**（保留记录以免重复劳动）
 
-我最初怀疑：`backend.js:245` 原样透传 `request.cwd`，而 `ResolvedSubagentStartRequest.cwd`
+我最初怀疑：`backend.js:289` 原样透传 `request.cwd`，而 `ResolvedSubagentStartRequest.cwd`
 的文档写的是 "**Absolute** child directory"（`types.ts:196-199`），codex provider 又有
 `assertUsableCwd` 强校验绝对性（`subagent-codex/src/index.ts:76`）——
 看起来相对路径会在 provider 处炸掉。
@@ -207,7 +207,7 @@ const cwd = request.cwd !== undefined && isAbsolute(request.cwd)
 
 #### `model` / `timeoutMs` 被静默丢弃 —— 这是设计，但值得写进契约
 
-`backend.js:213-223` 的 JSDoc 说 "`model` and `timeoutMs` do not apply: official providers own
+`backend.js:249-259` 的 JSDoc 说 "`model` and `timeoutMs` do not apply: official providers own
 their route and limits"。核对官方：`SubagentStartRequest` 里**确实没有** model/timeout 字段
 （`types.ts:136-188` 全字段已列），模型只能由 **bundle 的 config `model`** 固定
 （`subagent-codex/src/index.ts:39-40`、README:43 "fixed for every thread from this provider instance"）。
@@ -216,7 +216,7 @@ their route and limits"。核对官方：`SubagentStartRequest` 里**确实没�
 不会报错、不会生效。这是**行为上的静默丢弃**，不是崩溃。
 
 **建议**：`agent_dispatch` 在走 subagent 路径且 `args.model` 非空时，**明确报错或在返回里标注
-"model ignored on official path"**，而不是静默忽略。当前实现两者都没做（`backend.js:253-262`
+"model ignored on official path"**，而不是静默忽略。当前实现两者都没做（`backend.js:296-306`
 的返回里没有该信息），模型会以为自己换了模型。
 
 ---
@@ -237,11 +237,11 @@ persistence."
 机制上也没有续聊入口：`SubagentRun` 只有 `result` / `dispose`，`thread/start` 传的是
 `ephemeral: true`（README:110）。
 
-⇒ `src/backend.js:237-239` 的提前拒绝**是正确且必要的**。
+⇒ `src/backend.js:280` 的提前拒绝**是正确且必要的**。
 
 #### 但错误文案是误导的
 
-`src/backend.js:152-158`：
+`src/backend.js:168-181`：
 ```js
 return new Error(
   'resumeSessionId is not supported on the official subagent path for provider "' + providerId + '"'
@@ -272,7 +272,7 @@ provider"这半句（它只在**同一个外部 CLI 会话**的场景下成立�
 | 路径 | `externalSessionId` 实际含义 |
 |---|---|
 | CLI（`codex.js:56`） | **真实的 Codex 会话 id**，可用于 `resumeSessionId` |
-| 官方（`backend.js:259`） | `activation.childId` = **DSH 内部随机 UUID**，**不可用于 resume** |
+| 官方（`backend.js:306`） | `activation.childId` = **DSH 内部随机 UUID**，**不可用于 resume** |
 
 而 `agent_dispatch` 的返回字段名是同一个 `externalSessionId`，描述也没区分
 （`src/tools.js:318` "resumeSessionId continues one of that agent's existing sessions
@@ -389,7 +389,7 @@ subagent 不经过 DSH 的 approval seam，它是把任务整包丢给一个外�
 
 顺序上，我们的 gate 在外层：`src/tools.js:293`（前台）、`:379`（后台）与 `:461`（圆桌）都是
 `gate.run(signal, () => backend.dispatch(...))`；`backend.dispatch` 内部才调
-`startActivation`（`backend.js:242`）。圆桌也已纳入同一闸门
+`startActivation`（`backend.js:283`）。圆桌也已纳入同一闸门
 （`:455-463` 的 `gatedRegistry`）。
 
 ⇒ **不会双计**，因为两者不是同一计数：我们的 3 个槽位**限制并发进入**，
@@ -440,7 +440,7 @@ dispatch -> {"text":"cli","externalSessionId":null,"durationMs":0,"backend":"cli
 1. **返回值里 `backend: 'cli'` 是唯一线索**，而且它只出现在成功返回的 JSON 里。
    模型不会去比对，用户更不会。UI 的终端卡片只显示 output，不显示 backend
    （`src/tools.js:354-364` 的 `presentResult` 只取 `result.content[0].text`）。
-2. **`/state` 会显示 `available: true`**（`backend.js:362-369` 的 `cli.found` 分支），
+2. **`/state` 会显示 `available: true`**（`backend.js:400-407` 的 `cli.found` 分支），
    于是面板看起来"codex 一切正常"，实则官方路径从未被走到。
 3. **权限语义全变了**：走 CLI 时是我们自己的 `spawnCli`（无 `permissionMode` 概念），
    走官方时是 `never` 无审批。用户以为在用一个，实际在用另一个。
@@ -449,7 +449,7 @@ dispatch -> {"text":"cli","externalSessionId":null,"durationMs":0,"backend":"cli
 
 1. **名字不匹配时必须告警**。`/state` 的 `detail` 已经会说
    `'no CLI provider registered; official subagent provider "<name>" needs a live parent agent'`
-   —— 但**只在 CLI 也不存在时**才显示（`backend.js:377-386`）。CLI 存在时这条信息完全不出现。
+   —— 但**只在 CLI 也不存在时**才显示（`backend.js:415-425`）。CLI 存在时这条信息完全不出现。
    建议：当 `config.providers[id].subagentProvider` **设置了但没注册**时，
    即使 CLI 可用，也在 `detail` 里追加 `official provider "<name>" is configured but not registered; using CLI`。
 2. README 里把"`providerName` 必须与 `subagentProvider` 一字不差"写成**显式约束**，
@@ -515,15 +515,34 @@ continue useful work while they run"）**与我们的阻塞语义相反**。
 
 ## 对实现的可执行建议（按优先级）
 
-| # | 建议 | 依据 | 工作量 |
-|---|---|---|---|
-| 1 | 去掉 `codex`/`claude` 的默认 `subagentProvider`，改 CLI-only；用户显式开启 | Q1 + Q4 | 2 行 |
-| 2 | `resumeRejection` 删除"use the CLI provider"半句，改为"不可续，需重述上下文" | Q3 | 1 行 |
-| 3 | `agent_dispatch` 在官方路径收到 `model` 时明确提示"model ignored"，而非静默丢弃 | Q2 | ~5 行 |
-| 4 | `subagentProvider` 配置了但未注册时，`/state` 的 `detail` 追加告警（即使 CLI 可用） | Q6 | ~10 行 |
-| 5 | README/SPEC 补 `permissionMode` 默认 `never` 的行为说明 | Q4 | 文档 |
-| 6 | SPEC 区分两条路径的 `externalSessionId` 语义 | Q7-1 | 文档 |
-| 7 | 捕获 `ACTIVATION_LIMIT_REACHED` 并改写文案，指明可能是官方工具占满池 | Q5 | ~5 行 |
+| # | 建议 | 依据 | 工作量 | 状态 |
+|---|---|---|---|---|
+| 1 | 去掉 `codex`/`claude` 的默认 `subagentProvider`，改 CLI-only；用户显式开启 | Q1 + Q4 | 2 行 | ⏳ 未做 |
+| 2 | README/SPEC 补 `permissionMode` 默认 `never` 的行为说明（**当前最高优先**） | Q4 | 文档 | ⏳ 未做 |
+| 3 | `agent_dispatch` 在官方路径收到 `model` 时明确提示"model ignored"，而非静默丢弃 | Q2 | ~5 行 | ⏳ 未做 |
+| 4 | `resumeRejection` 措辞改为"id 不可互换、官方不可续" | Q3 | 1 行 | ✅ `58e3ab1` |
+| 5 | `subagentProvider` 配置了但未注册时，`list()` 的 `detail` 说明原因 | Q6 | ~10 行 | ✅ `58e3ab1` |
+| 6 | 捕获 `ACTIVATION_LIMIT_REACHED` 改写文案，指明是池被别的 delegation 占满 | Q5 | ~5 行 | ✅ `58e3ab1` |
+| 7 | SPEC 区分两条路径的 `externalSessionId` 语义 | Q7-1 | 文档 | ✅ 代码已改，SPEC 待补 |
+
+---
+
+## 本报告结论的落地状态（审计后复核）
+
+本报告的三条主要建议在审计过程中已被 `58e3ab1` 采纳落地，我复核了实现：
+
+| 本报告条目 | 落地情况 | 复核证据 |
+|---|---|---|
+| Q3 `externalSessionId` 语义 / resume 文案 | ✅ **已修** | `src/backend.js:168-181` 的新文案明确写出"official run mints a fresh id per run"、"those ids are not resumable and are not the same as the CLI provider's"，并指明用 `agent_sessions` 找 CLI 侧 id |
+| Q5 pool contention 文案 | ✅ **已修** | `src/backend.js:184-194` 识别 `ACTIVATION_LIMIT_REACHED`，改写为"pool held by another delegation" |
+| Q6 `providerName` 不匹配静默降级 | ✅ **已修（可观测）** | `src/backend.js:415-425` 现在返回 `configured but not registered on ctx.subagents (is the bundle enabled, and does its providerName match ...?)`，并列出已注册的名字 |
+| Q1 移除 `codex`/`claude` 默认 `subagentProvider` | ⏳ **未采纳**（属产品决策，非缺陷） | `src/config.js:18-19` 仍是 `subagentProvider: 'codex'` / `'claude-code'` |
+| Q4 `permissionMode` 默认 `never` 的告知 | ⏳ **未处理** | `grep -rn permissionMode src/ README.md` → 0 命中 |
+| Q2 `model` 静默丢弃 | ⏳ **未处理** | `src/backend.js:296-306` 的返回里仍无该信息 |
+
+**剩余风险集中在 Q4**：既然 Q1 的默认值没改，模型仍可在启用 bundle 后通过
+`agent_dispatch(provider:'codex')` 触发 `permissionMode: never` 的官方执行，
+而插件与 README 对此**只字未提**。这是我建议的下一优先项。
 
 ---
 

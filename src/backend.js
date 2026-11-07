@@ -300,12 +300,24 @@ function subagentBackend({ ctx, config, providerId, providerName, label, parent 
         const outputText = isObject(result) ? blocksText(result.output) : ''
         const stopReason = isObject(result) ? result.stopReason : undefined
         if (stopReason !== 'completed' && outputText === '') throw stopFailure(providerName, result)
+        // `model` cannot be forwarded here: SubagentStartRequest has no model
+        // field, and the only route for one is `agentOptions`, which these
+        // providers do not advertise. Report the override as ignored rather
+        // than letting the caller believe it took effect.
+        const ignoredModel = typeof request.model === 'string' && request.model !== ''
         return {
           text: outputText,
           stopReason,
           externalSessionId: activation.childId ?? null,
           durationMs: Date.now() - started,
           backend: 'subagent',
+          ...(ignoredModel
+            ? {
+                ignored: ['model'],
+                note: 'the official provider fixes its model through the bundle config;'
+                  + ' the requested model "' + request.model + '" was not applied',
+              }
+            : {}),
         }
       } catch (error) {
         primary = error

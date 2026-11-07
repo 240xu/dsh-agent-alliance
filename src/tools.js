@@ -305,6 +305,11 @@ export function registerTools(ctx, { resolver, registry, config, home, io }) {
       externalSessionId: result?.externalSessionId ?? null,
       stopReason: result?.stopReason ?? null,
       durationMs: Date.now() - startedAt,
+      // A backend that could not honour part of the request says so here, so
+      // the model does not assume an override took effect.
+      ...(Array.isArray(result?.ignored) && result.ignored.length > 0
+        ? { ignored: result.ignored, note: result.note ?? null }
+        : {}),
     })
   }
 

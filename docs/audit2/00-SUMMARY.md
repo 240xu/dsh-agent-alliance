@@ -98,6 +98,26 @@ A1 找到 1 个 critical（`agent.sessionId` 字段不存在）。**如果只做
 | C2 框架引用核对未完成 | — | — | 只完成了前两条引用 |
 | 官方 bundle 未安装 | — | — | 仍是 `availability: missing`，subagent 路径未经真实运行验证 |
 
+## 四之二、需要你决策的一项（不是缺陷，是取舍）
+
+**Q1：官方 bundle 启用后，模型会同时看到 `subagent_codex` 和我们的 `agent_dispatch`。**
+
+D1 的建议是**移除默认的 `subagentProvider: 'codex'` / `'claude-code'`**，让官方工具成为唯一官方路径，
+`agent_dispatch` 退回 CLI-only；但**保留** codex CLI 后端（面板/HTTP 没有 Agent 身份，只能走 CLI）。
+
+支持移除的证据：
+- 官方 `tool-subagent` 会注册一段 system prompt（"start independent delegations … together and
+  continue useful work while they run"），与我们的阻塞语义**相反**；模型在发现阶段会结构性偏向官方工具。
+- 两个工具共享 subagent 池（8 槽），我们只保证自己那 3 个，真实上限 ≈ 3 + 模型直接调官方的数量。
+
+反对移除的证据：
+- 我们的 `agent_dispatch` 是**同步取答案**，官方工具是"发了就继续干活、稍后通知"。这是真实的能力差异，
+  不是重复。
+- 移除默认值会让**已经配置好官方后端的用户**在升级后静默退回 CLI（CLI 可能根本没装）。
+
+**我没有改这个默认值**——它改变所有用户行为，且两种选择都站得住。请你决定；改起来是一行
+（`src/config.js:18-19`），并在 README 说明迁移。
+
 ## 五、方法论教训（值得记住的）
 
 **对抗审计不是可选步骤。** 本轮 3 名对抗审计在我的产出里找到 6 个缺陷，其中 2 个 critical；

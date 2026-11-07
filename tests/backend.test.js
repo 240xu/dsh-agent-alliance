@@ -432,3 +432,19 @@ test('a full subagent pool is reported as someone else holding it', async () => 
     },
   )
 })
+
+test('a model override on the official path is reported as ignored', async () => {
+  const { service } = fakeSubagents({ names: ['codex'], result: { output: [{ type: 'text', text: 'ok' }], stopReason: 'completed' } })
+  const { parent, agents } = fakeParent()
+  const resolver = createBackendResolver({
+    ctx: { subagents: service, agents },
+    registry: createRegistry([cliProvider('codex')]),
+    config: baseConfig,
+  })
+  const backend = resolver.resolve({ provider: 'codex', parent })
+  const result = await backend.dispatch({ prompt: 'work', model: 'gpt-5' })
+  // SubagentStartRequest has no model field, so the override cannot be applied.
+  // Reporting it lets the caller see the truth instead of assuming it worked.
+  assert.deepEqual(result.ignored, ['model'])
+  assert.match(String(result.note), /not applied/)
+})
