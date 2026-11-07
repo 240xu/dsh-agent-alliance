@@ -13,16 +13,41 @@ DeepSeek Harness 双面插件：让 DSH 与 **Claude Code / Codex / OpenCode / Z
 
 | 顺序 | 后端 | 条件 | 特点 |
 |---|---|---|---|
-| 1 | `subagent`（官方） | 配置里 `subagentProvider` 指向的 provider 已注册在 `ctx.subagents`，**且** 调用方是一个活的 Agent | 官方实验包托管生命周期、模型、权限与沙箱；一次性、隔离、只回最终答复 |
+| 1 | `subagent`（官方） | 配置里 `subagentProvider` 指向的 provider 已注册在 `ctx.subagents`，**且** 调用方是一个活的 Agent | 官方实验包托管生命周期与模型；权限由**包自身的 `permissionMode` 默认值**决定（见下）；一次性、隔离、只回最终答复 |
 | 2 | `cli`（包装层） | 其余情况（无 Agent 身份、未装官方包、用到 `resumeSessionId`） | 直调本机 CLI；可续聊外部会话；历史会话可浏览/导入 |
 
-官方后端来自这两个包，在「设置 → 插件」里启用即可，插件会自动探测：
+官方后端来自这两个包，在「设置 → 插件」里启用即可，插件会在运行时检查 `ctx.subagents` 是否注册了对应 provider（**不检查包的 payload 是否存在**）：
 
 - `@deepseek-ai/dsh-subagent-codex` → provider `codex`
 - `@deepseek-ai/dsh-subagent-claude-code` → provider `claude-code`
 
 官方子代理是**一次性**的：`resumeSessionId` 在这条路上会被明确拒绝，需要续聊请走 CLI 包装层
 （也可用 `agent_sessions` 找到外部会话 id 后显式指定）。每个工具结果都带 `backend` 字段，标明这次走的是哪条路。
+
+### ⚠️ 权限模式不由本插件设置
+
+两个官方包的 `permissionMode` 默认值**不同**，而本插件**从不覆盖**它们：
+
+| 包 | 默认 `permissionMode` | 实际含义 |
+|---|---|---|
+| `dsh-subagent-codex` | `never` | 不弹审批；执行失败在原生 sandbox 下返回给模型 |
+| `dsh-subagent-claude-code` | `dontAsk` | 未预先授权的操作**直接拒绝**而非询问 |
+
+后果需要你自己判断：
+
+- 走 **codex** 官方后端时，任务在 sandbox 内自动执行，不打扰你，但也不经你确认。
+- 走 **claude-code** 官方后端时，**会改文件的任务可能做不动**：授权请求被拒，而模型可能仍返回一段
+  说明性文字，本插件会把它当作成功结果（`stopReason === 'completed'` 且有文本）。
+
+要改变这些行为，请在启用官方包的 patch 行里显式配置 `permissionMode`，而不是期望本插件替你选。
+
+### 环境变量
+
+两条派发路径对子进程环境的处理不同：
+
+- **官方后端**：由 host 的 subagent seam 清理 `*KEY*` / `*PASSWORD*` / `*SECRET*` / `*TOKEN*` 与全部 `DSH_*` 变量。
+- **CLI 包装层**（面板走这条）：本插件同样清理这些名字（`src/runner.js`），因此不会把宿主的 API key
+  交给第三方 CLI。显式传入 `env` 的条目会被保留——那是调用方的明确选择。
 
 ## 模型工具（6 个）
 
@@ -89,8 +114,9 @@ DeepSeek Harness 双面插件：让 DSH 与 **Claude Code / Codex / OpenCode / Z
 - `subagentProvider` 省略即该家只走 CLI 包装层
 - `zcode` 走 `commandTemplate` 模板（`{prompt}` `{session}` `{cwd}`，单引号安全转义）
 - `maxConcurrent` 限制同时派发到外部 agent 的在飞数量；排队期间取消立即出队
-- 各家探测：claude 经 grun；codex 绝对 node 入口；opencode 强制 TMPDIR 归一；
-  宿主环境缺失时 runner 自动补 PATH/HOME/TMPDIR
+- 各家探测（**仅 CLI 路径**）：claude 经 grun；codex 绝对 node 入口；opencode 强制 TMPDIR 归一；
+  宿主环境缺失时 runner 自动补 PATH/HOME/TMPDIR。官方后端使用包内自带的平台 payload，
+  **不经过 grun 也不使用宿主 PATH 上的同名 CLI**。
 
 ## 导入保真度
 

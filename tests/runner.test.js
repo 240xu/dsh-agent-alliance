@@ -59,3 +59,30 @@ test('cwd 生效（ESM 探针）', async () => {
   })
   assert.equal(r.stdout.trim(), 'true')
 })
+
+test('credential-shaped and DSH_ ambient variables never reach an external CLI', async () => {
+  const { normalizeEnv } = await import('../src/runner.js')
+  const saved = { ...process.env }
+  try {
+    process.env.MY_PASSWORD = 'secret'
+    process.env.DEEPSEEK_API_KEY = 'sk-x'
+    process.env.GITHUB_TOKEN = 'gh-t'
+    process.env.DSH_INTERNAL_FACT = 'internal'
+    process.env.SAFE_SETTING = 'kept'
+
+    const env = normalizeEnv()
+    // The official subagent seam scrubs these classes before spawning; the CLI
+    // path is what the panel uses, so it must scrub them too or it hands a
+    // third-party CLI the host's API keys.
+    for (const name of ['MY_PASSWORD', 'DEEPSEEK_API_KEY', 'GITHUB_TOKEN', 'DSH_INTERNAL_FACT']) {
+      assert.equal(env[name], undefined, name + ' must be stripped from the child environment')
+    }
+    assert.equal(env.SAFE_SETTING, 'kept', 'ordinary ambient values still pass through')
+
+    // An explicit env entry is a deliberate caller opt-in and survives.
+    const opted = normalizeEnv({ MY_PASSWORD: 'deliberate' })
+    assert.equal(opted.MY_PASSWORD, 'deliberate')
+  } finally {
+    process.env = saved
+  }
+})

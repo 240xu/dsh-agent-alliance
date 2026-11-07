@@ -15,9 +15,37 @@ function termuxPrefix() {
   return process.env.PREFIX || '/data/data/com.termux/files/usr'
 }
 
+/**
+ * Names whose values look like credentials and must not reach an external agent.
+ *
+ * The DSH subagent seam scrubs the same classes (`KEY|PASSWORD|SECRET|TOKEN`
+ * plus every `DSH_*` fact) before spawning an official child. This CLI path is
+ * used by the panel and by every non-agent dispatch, so it needs the same
+ * treatment: the panel's dispatch would otherwise hand a third-party CLI the
+ * host's API keys.
+ */
+const CREDENTIAL_NAME = /(?:KEY|PASSWORD|PASSWD|SECRET|TOKEN|CREDENTIAL|SESSION)/i
+
+/**
+ * Build the child environment for one external agent CLI.
+ *
+ * The ambient environment is scrubbed of credential-shaped names and DSH
+ * internals, then `extra` is layered on top as a deliberate caller opt-in.
+ * PATH/HOME/TMPDIR are backfilled so a cleared host environment still runs.
+ * @param {Record<string, string|undefined>} [extra] explicit caller-supplied entries
+ * @returns {NodeJS.ProcessEnv} the child environment
+ */
 export function normalizeEnv(extra) {
   const prefix = termuxPrefix()
-  const merged = { ...process.env, ...(extra || {}) }
+  const merged = {}
+  for (const [name, value] of Object.entries(process.env)) {
+    if (value === undefined) continue
+    if (CREDENTIAL_NAME.test(name)) continue
+    if (name.startsWith('DSH_')) continue
+    merged[name] = value
+  }
+  // `extra` is an explicit caller decision, so it survives the scrub.
+  Object.assign(merged, extra || {})
   if (!merged.HOME) merged.HOME = homedir() || '/data/data/com.termux/files/home'
   if (!merged.TMPDIR) merged.TMPDIR = tmpdir() && tmpdir() !== '/tmp' ? tmpdir() : prefix + '/tmp'
   if (!merged.PATH || merged.PATH.length === 0) {
