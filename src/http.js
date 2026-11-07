@@ -365,7 +365,18 @@ export function registerHttp(webServer, { ctx, io, resolver, registry, config, h
   routes.set('/state', route(['GET'], async () => {
     const probed = await detectRows()
     const byId = new Map(probed.map((row) => [row.id, row]))
-    const providers = resolver.list(undefined).map((info) => {
+    // `enabled:false` is a DISPLAY concern only. It must not reach
+    // resolver.resolve(): that same list feeds official subagent dispatch, so
+    // dropping a provider there would break delegation for a provider whose CLI
+    // wrapper the user disabled but whose official backend still works.
+    const disabled = new Set(
+      Object.entries(config?.providers ?? {})
+        .filter(([, entry]) => entry !== null && typeof entry === 'object' && entry.enabled === false)
+        .map(([id]) => id),
+    )
+    const providers = resolver.list(undefined)
+      .filter((info) => !disabled.has(info.id))
+      .map((info) => {
       const probe = byId.get(info.id)
       if (probe === undefined) {
         // No probe row means availability is unknown (detectAll threw, or this
@@ -379,7 +390,7 @@ export function registerHttp(webServer, { ctx, io, resolver, registry, config, h
         available: probe.available === true,
         ...(typeof probe.detail === 'string' && probe.detail !== '' ? { detail: probe.detail } : {}),
       }
-    })
+      })
     return { providers, recentDispatches: recent.slice(-20) }
   }))
 

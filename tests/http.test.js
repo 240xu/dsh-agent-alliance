@@ -651,3 +651,30 @@ test('GET /state fails closed when the probe itself fails', async () => {
   assert.equal(p1.available, false)
   assert.match(String(p1.detail), /not probed/)
 })
+
+test('GET /state hides providers disabled in config without removing them from resolve', async () => {
+  const { webServer, routes } = mockWebServer()
+  const resolver = {
+    list: () => [
+      { id: 'p1', label: 'P1', kind: 'cli', available: true },
+      { id: 'p2', label: 'P2', kind: 'cli', available: true },
+    ],
+    resolve: (request) => ({ id: String(request.provider), kind: 'cli', available: true, dispatch: async () => ({ text: 'x' }) }),
+  }
+  const registry = {
+    list: () => [{ id: 'p1', label: 'P1' }, { id: 'p2', label: 'P2' }],
+    get: () => undefined,
+    detectAll: async () => [{ id: 'p1', available: true }, { id: 'p2', available: true }],
+  }
+  const config = {
+    defaults: { timeoutMs: 5000 },
+    panel: { enabled: true },
+    // p2 is disabled for display. It must still resolve: `enabled` gates the
+    // picker, not official subagent dispatch.
+    providers: { p1: { enabled: true }, p2: { enabled: false } },
+  }
+  registerHttp(webServer, options({ resolver, registry, config }))
+  const response = await request(routes, 'GET', ROUTE_PREFIX + '/state')
+  const ids = response.json.providers.map((p) => p.id)
+  assert.deepEqual(ids, ['p1'], 'a disabled provider must not be offered in the panel')
+})
