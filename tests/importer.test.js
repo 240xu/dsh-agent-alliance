@@ -662,3 +662,35 @@ test('concurrent imports neither lose ledger entries nor duplicate a session', a
   assert.equal(results.filter((r) => r.status === 'imported').length, 1)
   assert.equal(results.filter((r) => r.status === 'already-imported').length, 5)
 })
+
+test('importOne never reports a title it did not write', async () => {
+  const { importOne, loadLedger } = await import('../src/importer/persist.js')
+  const { mkdtempSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+
+  const home = mkdtempSync(join(tmpdir(), 'alliance-title-'))
+  let writtenTypes = []
+  const ctx = {
+    get: (name) => name === 'sessionPersistence'
+      ? {
+          create: async () => ({
+            append: async (events) => { writtenTypes = events.map((event) => event.type) },
+            flush: async () => {},
+            close: async () => {},
+          }),
+        }
+      : undefined,
+  }
+  // A turn stream with no user text cannot carry a derived title: the v4 reader
+  // rejects `session/title` with zero citations. convertToDshEvents emits none.
+  const registry = {
+    get: () => ({
+      exportSession: async () => ({ title: 'Real External Title', createdAt: 1, cwd: '/tmp', turns: [{ assistant: 'I refactored the module.' }] }),
+    }),
+  }
+  const result = await importOne(ctx, { registry, provider: 'p', externalId: 'e1', home })
+  assert.equal(writtenTypes.includes('session/title'), false)
+  assert.equal(result.title, null, 'the result must not claim a title that was never written')
+  assert.equal(loadLedger(home)['p:e1'].title, null, 'the ledger must match the stored log')
+})

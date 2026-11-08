@@ -245,6 +245,14 @@ async function importOneUnlocked(ctx, { registry, provider: providerId, external
     title: exported.title,
     turns: exported.turns,
   })
+  // convertToDshEvents omits `session/title` entirely when the turn stream has
+  // no user text (the v4 reader rejects a derived title with zero citations).
+  // Report only the title that was actually written, so the tool result and
+  // ledger never claim a title the stored log does not contain.
+  const writtenTitleEvent = events.find((event) => event.type === 'session/title')
+  const writtenTitle = writtenTitleEvent !== undefined && typeof writtenTitleEvent.data?.title === 'string'
+    ? writtenTitleEvent.data.title
+    : null
 
   const header = { version: SESSION_FORMAT_VERSION, id: dshSessionId, createdAt, isSeeded: false }
   if (cwd !== undefined) header.cwd = cwd
@@ -276,7 +284,7 @@ async function importOneUnlocked(ctx, { registry, provider: providerId, external
         externalId: String(externalId),
         importedAt: Date.now(),
         turns: exported.turns.length,
-        title: typeof exported.title === 'string' ? exported.title : null,
+        title: writtenTitle,
       },
     }
   })
@@ -285,7 +293,7 @@ async function importOneUnlocked(ctx, { registry, provider: providerId, external
     status: 'imported',
     dshSessionId,
     turns: exported.turns.length,
-    title: typeof exported.title === 'string' ? exported.title : null,
+    title: writtenTitle,
   }
 }
 

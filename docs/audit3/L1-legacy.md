@@ -15,16 +15,16 @@
 
 | # | 目标 | 判决 |
 |---|---|---|
-| L1-1 | Termux-first 路径探测 | **SURVIVES（完全未动，16 个 commit 零改动）** |
+| L1-1 | Termux-first 路径探测 | **PARTIALLY** — 默认值仍是 Termux（SURVIVES），但用户配置覆盖在审计过程中被 `90ef1bc` 补上了 |
 | L1-2 | 导入管线 v4 合规 | **PARTIALLY** — 事件流本身全部合法（40+ 对抗输入 0 失败），但 `importOne` 在"无 user 文本"会话上**报告了一个从未写入的 title** |
 | L1-3 | 旧 API 残留 | *（待定）* |
 | L1-4 | 静默 catch → "空会话" | *（待定）* |
 
 ---
 
-## L1-1 — Termux-first 路径探测：**SURVIVES（原封不动）**
+## L1-1 — Termux-first 路径探测：**PARTIALLY（默认值 SURVIVES；逃生舱刚补上）**
 
-### 判决：**SURVIVES**，且比前一轮审计描述的更严重（多一个 arch 硬编码 + 一个不存在的"用户覆盖"）
+### 判决：**PARTIALLY** —— 审计期间 `90ef1bc` 补上了"用户可覆盖"，但 **Termux 默认值本身原封不动**
 
 #### 证据 1：四家 provider 仍以 Termux 前缀为默认
 
@@ -348,4 +348,127 @@ const effectiveTitle = wroteTitle && typeof exported.title === 'string' ? export
 
 ---
 
-<!-- APPEND: L1-3 -->
+### L1-1 补记：审计期间落地的修复（`90ef1bc`）与仍然存活的部分
+
+审计进行中，`90ef1bc`（"fix: make configured provider paths actually work on non-Termux hosts"）
+采纳了本条的**后半部分**。我复核了它：
+
+**已修（✅）** —— `buildProviders` 现在把 `config.providers.<id>.paths` 合并进 `deps.paths`，
+所以用户**终于**能覆盖路径了。实测：
+
+```bash
+$ node -e "buildProviders({config:{providers:{claude:{enabled:true,
+    paths:{grun:'/usr/bin/grun',claudeBin:'/usr/bin/claude'}}}}}).get('claude').detect()"
+with configured paths -> available: false
+detail: spawn /usr/bin/grun ENOENT          # ← 不再是 Termux 路径，覆盖生效
+```
+
+`ROADMAP.md` 里"依赖用户配置覆盖"的错误陈述也被纠正了。
+
+**仍然存活（❌ 未修）** —— **默认值一个字都没改**：
+
+```bash
+$ node -e "buildProviders({config:{providers:{claude:{enabled:true}}}}).get('claude').detect()"
+no config -> detail: spawn /data/data/com.termux/files/usr/bin/grun ENOENT
+```
+
+以及 `src/provider/claude.js:22` 的硬编码 arch 仍然在：
+
+```js
+claudeBin: prefix() + '/lib/node_modules/@anthropic-ai/claude-code-linux-arm64/claude',
+```
+
+⇒ **开箱即用仍然是坏的**：一个没读过 README、没配 `paths` 的普通 Linux 用户，
+装完插件后四家全 `available: false`，且诊断指向一个他机器上不可能存在的 Termux 路径。
+现在他能自救了（改配置），但**默认体验仍然是 0.1.0 的**。
+
+**所以判决维持 PARTIALLY**：逃生舱 ✅，默认值 ❌。真正把"Termux-first"改成
+"PATH-first"（默认 `'grun'` / `'claude'` / `'opencode'`，`$PREFIX` 只在检测到 Termux 时启用）
+**仍未做**。
+
+---
+
+## L1-3 — 旧 API 残留 grep
+
+### 判决：**PARTIALLY** —— API 层面全干净（FIXED），但发现一个**整份文件级的遗留**
+
+#### 3a. API 残留：全部 FIXED（0 命中）
+
+逐项 grep 了 `package.json` 声明会发布的文件（`index.js`、`client.js`、`src/`、`locale/`、`docs/`）：
+
+| 旧 API | grep 目标 | 结果 |
+|---|---|---|
+| `defineTool` | `src/ index.js client.js` | **0 命中** ✅ |
+| `@deepseek-ai/*` 运行时 import | `src/ index.js client.js` | **0 命中** ✅ |
+| `sessionPersistence.append(id, events)`（旧服务级 API） | `src/ index.js` | **0 命中** ✅ 现在只有 `handle.append(events)`（`persist.js`） |
+| `owner: Agent`（对象而非 SessionId） | `src/*.js` | **0 命中** ✅ 现在是 `owner: exec?.agent?.id`（`tools.js:384`、`:493`） |
+| `react-dom` | `src/ index.js client.js` | **0 命中** ✅ |
+| `MutationObserver` | 同上 | **0 命中** ✅ |
+| `ACP` / `acp` bridge | 同上 | **0 命中** ✅ |
+
+`owner` 这一项值得单独说：`docs/audit2/A1-adversarial.md` 的 N1 曾指出
+`exec?.agent?.sessionId` 读的是**不存在的字段**（DSH 的 `Agent` 只有 `id`），
+现在已改成 `exec?.agent?.id`（`src/tools.js:384`、`:493`），**这条确认 FIXED**。
+
+`inject` 纪律也正确：`index.js:27` `export const inject = ['tools']`，
+其余服务（`jobs`/`webServer`/`connection`/`sessionPersistence`/`agents`/`subagents`）
+**全部**通过 `ctx.get(...)` 读，没有任何裸 `ctx.subagents` 属性访问
+（`backend.js` 里的 `ctx.subagents` 只出现在注释与错误文案里，见 `:342-346`、`:437`）。
+
+#### 3b. 但发现一个整份文件的遗留：`src/index.js`（旧入口的陈旧副本）
+
+**这一项已在本轮审计期间被别人删除**（`e7da40f` 之后 `git status` 显示 `D src/index.js`），
+但它是真实存在过的 0.1.0 遗留，且**活了 16 个 commit**，我记录证据：
+
+```bash
+$ ls -l src/index.js          # 审计开始时
+-rw-rw-r--+ 1 dsh dsh 3316 Nov  6 19:39 src/index.js
+
+$ git log -1 --format="%h %ad %s" --date=short -- src/index.js
+e15fcf8 2026-11-06 feat!: 0.2.0 rewrite aligned with DSH 0.2.1-rc.2   # 之后再没动过
+
+$ git log -1 --format="%h %ad %s" --date=short -- index.js
+e15fcf8 2026-11-06 feat!: 0.2.0 rewrite aligned with DSH 0.2.1-rc.2   # 同样
+```
+
+**为什么它是"遗留"而不是"备份"**：
+
+1. `package.json` 的 `files` 包含 `"src"` ⇒ **它会被打进 npm 包**，用户能 require 到它。
+2. 它**能成功加载**并**注册全部 6 个工具**——所以它不是显然坏掉的死文件：
+   ```
+   $ node -e "import('./src/index.js').then(m=>console.log(Object.keys(m)))"
+   src/index.js loaded OK; exports: apply,inject,name
+   ```
+3. 但它**与 `index.js` 已经分叉**，最关键的一行：
+   ```js
+   index.js:140      const options = { ctx, io: importContext(ctx), resolver, registry, config, home }
+   src/index.js:86   const options = { ctx, resolver, registry, config, home }   // ← 没有 io
+   ```
+   `io` 是给 importer 的 **`ctx.get` 门面**（`index.js:74-89`）。缺了它，
+   `tools.js` 的 `agent_import` 会退化成 `importOne(io ?? ctx, ...)` = 直接传原始 Cordis ctx，
+   而原始 ctx 上裸读未注入的服务会抛。实测：
+
+   ```
+   $ node /tmp/l1_io.mjs
+   stale entry (no io -> raw ctx) -> THREW: 宿主缺少 sessionPersistence.create，无法落库
+   ```
+
+   （在真实 Cordis ctx 上，第一次裸读 `ctx.sessionPersistence` 就会抛
+   `cannot get property "sessionPersistence" without inject`；我这里用 proxy 复刻了该行为。）
+4. **没有任何测试覆盖它**：`grep -rn "src/index" tests/` → 0 命中。
+
+⇒ 一个用户若误按 `src/index.js` 作为入口（例如手工把 `main` 指过去、或从 tarball 里
+require `dsh-agent-alliance/src/index.js`），会得到一个**工具注册成功但导入功能坏掉**的插件，
+且没有任何测试或错误提示会拦住他。
+
+**修复**：直接删除 `src/index.js`（**本轮审计结束时已被删除**），
+或在 `package.json` 的 `files` 里排除它。根本问题是"重写时复制了一份入口而没有删旧的"。
+
+#### 严重度
+
+**medium**（需要用户误用才会触发；但它是纯粹的 0.1.0 残留，且会静默地部分失效）。
+已被删除 ⇒ 当前 HEAD 上不再可复现，判决按"曾经 SURVIVES 16 个 commit、现已 FIXED"记录。
+
+---
+
+<!-- APPEND: L1-4 -->
