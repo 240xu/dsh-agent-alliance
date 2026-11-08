@@ -36,7 +36,7 @@ O1 用源码逐行给出了决定性判断：
 
 ### 结论 3：产品状态仍有一个硬缺口
 
-代码质量已达标（215 测试全绿），但**功能在这台机器上没有可用目标**：
+代码质量已达标（216 测试全绿），但**功能在这台机器上没有可用目标**：
 
 ```
 claude / codex / opencode / zcode     → 全部 MISSING
@@ -58,8 +58,9 @@ dsh-subagent-codex / -claude-code     → 全部 MISSING
 | `e7da40f` | 超时探测 abort 底层 `detect()`，`spawnCli` 杀掉孤儿子进程 | 真实子进程实测：153ms 返回且 `aborted=true` |
 | `85dd0cd` | 4 个工具声明 `isConcurrencySafe`；拒绝未知 config 键；删除死代码 `src/index.js` | 2 个回归测试 |
 | `0ca8809` | `importOne` 只报告实际写入的 title | 端到端验证返回值/台账/日志三者一致 |
+| `ebf077a` | `readSession` 区分 ENOENT 与 EACCES | chmod 000 实证：不可读报 EACCES，缺失 id 仍报 not-found |
 
-**测试：215 pass / 0 fail**（本轮从 207 增至 215，新增 8 个回归测试）。
+**测试：216 pass / 0 fail**（本轮从 207 增至 216，新增 9 个回归测试）。
 
 ### 我对专家结论的独立复核
 
@@ -77,6 +78,17 @@ dsh-subagent-codex / -claude-code     → 全部 MISSING
 | [L1-legacy.md](L1-legacy.md) | 0.1.0 遗留残留对抗审计（Termux 路径、v4 合规、旧 API、静默 catch） |
 | [L2-fixes.md](L2-fixes.md) | 16 个修复提交的回归审计（7 个 cluster） |
 | [O1-alignment.md](O1-alignment.md) | 官方行为对齐深挖（6 节 + backlog） |
+
+**L1 结项状态（4/4 已处置）**：
+
+| L1 项 | 判决 | 处置 |
+|---|---|---|
+| L1-1 Termux 路径 + arm64 硬编码 | PARTIALLY | `90ef1bc` 打通 `config.providers.<id>.paths`；Termux 默认值与 arm64 包名保留为显式文档化的可配置项（改动默认路径属行为变更，留 backlog） |
+| L1-2 importOne 谎报 title | PARTIALLY → FIXED | `0ca8809` |
+| L1-3 0.1.0 API 残留 / 死入口 | FIXED | `85dd0cd` 删除 `src/index.js`；API 层 0 命中 |
+| L1-4 权限错误误报"不存在" | SURVIVES → FIXED | `ebf077a`（本轮最后一条），chmod 000 实证 |
+
+L1 总结论：**重写替换了契约，但没有替换"出生环境"** —— Termux/ARM64 假设从 0.1.0 原封不动活到 0.2.0，并一度被误记为"已登记技术债"。这是本轮最值得记住的一条。
 
 **未完成**：L2 的 C4–C7 与 verdict table 在成员最后一段工作中被网络中断，C1–C3 已有实质结论。C2/C3 涉及的缺陷我已独立修完；C1（withDb）、C4（startJob 字符串匹配）、C5（single-flight）、C6（jobHooks 竞态）、C7（辩论头位置）**尚未被完整复核**，见下节规划。
 
