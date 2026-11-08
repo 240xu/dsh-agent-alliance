@@ -118,12 +118,27 @@ export function makeClaudeProvider({ deps = {}, config = {} } = {}) {
 
   async function readSession(id, { maxChars = 8000 } = {}) {
     let projects
-    try { projects = readdirSync(paths.projectsRoot, { withFileTypes: true }) } catch { return { messages: [] } }
+    try {
+      projects = readdirSync(paths.projectsRoot, { withFileTypes: true })
+    } catch (err) {
+      // A missing projects root means no sessions; an unreadable one is an
+      // environment failure the caller must see, not an empty transcript.
+      if (err?.code === 'ENOENT') return { messages: [] }
+      throw new Error('claude readSession 失败: ' + String(err?.message || err))
+    }
     for (const proj of projects) {
       if (!proj.isDirectory()) continue
       const file = join(paths.projectsRoot, proj.name, id + '.jsonl')
       let raw
-      try { raw = readFileSync(file, 'utf8') } catch { continue }
+      try {
+        raw = readFileSync(file, 'utf8')
+      } catch (err) {
+        // ENOENT is expected: the file lives under exactly one project dir.
+        // EACCES/EPERM on an existing file must surface instead of being
+        // reported as "session not found" after the loop ends.
+        if (err?.code === 'ENOENT') continue
+        throw new Error('claude readSession 失败: ' + String(err?.message || err))
+      }
       const messages = []
       for (const line of raw.split('\n')) {
         let o

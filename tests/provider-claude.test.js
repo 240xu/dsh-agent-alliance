@@ -140,3 +140,38 @@ test('exportSession：跳过 sidechain 行（子代理噪声）', async () => {
   assert.equal(s.turns.length, 1)
   assert.equal(s.turns[0].assistant, '主回答')
 })
+
+test('an unreadable session is reported as an access error, not "not found"', async () => {
+  const { makeClaudeProvider } = await import('../src/provider/claude.js')
+  const { mkdtempSync, mkdirSync, writeFileSync, chmodSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+
+  const root = mkdtempSync(join(tmpdir(), 'claude-perm-'))
+  const proj = join(root, 'proj1')
+  mkdirSync(proj)
+  const file = join(proj, 'sess1.jsonl')
+  writeFileSync(file, JSON.stringify({ type: 'user', message: { content: 'hello' } }) + '\n')
+  const provider = makeClaudeProvider({
+    config: {},
+    deps: { paths: { grun: '/bin/true', claudeBin: '/bin/true', projectsRoot: root } },
+  })
+
+  // listSessions must still see the session before we revoke access.
+  assert.ok((await provider.listSessions({})).some((s) => s.id === 'sess1'))
+  chmodSync(file, 0)
+  try {
+    await assert.rejects(
+      () => provider.readSession('sess1'),
+      (error) => {
+        assert.match(String(error.message), /EACCES|permission denied/i)
+        assert.doesNotMatch(String(error.message), /not found/i, 'a permission error is not a missing session')
+        return true
+      },
+    )
+  } finally {
+    chmodSync(file, 0o644)
+  }
+  // A genuinely missing id still reports the normal "not found".
+  await assert.rejects(() => provider.readSession('nope'), /not found/)
+})
