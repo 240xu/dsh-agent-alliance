@@ -29,8 +29,12 @@ function writeFile(value) {
 
 test('defaults match the spec', () => {
   const config = defaultConfig()
-  assert.deepEqual(config.providers.claude, { enabled: true, subagentProvider: 'claude-code' })
-  assert.deepEqual(config.providers.codex, { enabled: true, subagentProvider: 'codex' })
+  // No default subagentProvider: DSH already ships the official delegation
+  // tools, so binding our own tool to the same providers by default would
+  // duplicate them. Opting in stays possible through config.
+  assert.deepEqual(config.providers.claude, { enabled: true })
+  assert.deepEqual(config.providers.codex, { enabled: true })
+  assert.equal(config.providers.claude.subagentProvider, undefined)
   assert.deepEqual(config.providers.opencode, { enabled: true })
   assert.deepEqual(config.providers.zcode, { enabled: false, commandTemplate: '', resumeTemplate: '' })
   assert.deepEqual(config.defaults, { timeoutMs: 300000, maxConcurrent: 3, defaultCwd: '' })
@@ -159,4 +163,16 @@ test('configPath resolves against $DSH_HOME or an explicit home', () => {
     if (saved === undefined) delete process.env.DSH_HOME
     else process.env.DSH_HOME = saved
   }
+})
+
+test('a configured subagentProvider still opts into the official backend', async () => {
+  const { loadConfig } = await import('../src/config.js')
+  const { mkdtempSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+  const file = join(mkdtempSync(join(tmpdir(), 'alliance-cfg-')), 'none.json')
+  const config = loadConfig({ providers: { codex: { subagentProvider: 'codex' } } }, { file })
+  // Opting in must work; only the DEFAULT is absent.
+  assert.equal(config.providers.codex.subagentProvider, 'codex')
+  assert.equal(config.providers.claude.subagentProvider, undefined)
 })

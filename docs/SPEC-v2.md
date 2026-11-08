@@ -4,6 +4,30 @@ Pinned interfaces for the 0.2.0 rewrite against DSH `0.2.1-rc.2`. This file is t
 authority for cross-module boundaries; modules may change internals freely but must
 keep the exported names and data shapes below.
 
+## Positioning (decides every other choice below)
+
+DSH already ships a complete internal subagent system in `dsh-base`: the global
+`subagent` (spawn) and `subagent_fork` (fork) tools, where fork seeds the child
+with the parent's completed turns and therefore stays **KV-cache eligible** —
+the base bundle states it omits model selection precisely so the inherited
+prefix remains cacheable. Enabling a vendor bundle adds `subagent_codex` /
+`subagent_claude_code` on the same seam.
+
+**This plugin does not compete with any of that.** It exists for what the seam
+cannot reach: external coding agents that run outside this process, keep their
+own accounts and CLIs, and store conversation history in their own directories.
+Where a capability overlaps an official one, this plugin is the opt-in
+exception, never the default.
+
+Two consequences that override earlier drafts of this document:
+
+- `providers.<id>.subagentProvider` has **no default**. Binding our own
+  blocking tool to a provider the official tools already own made two tools
+  compete for one provider with opposite ergonomics (ours awaits, theirs returns
+  an id). Opting in stays supported.
+- Nothing here may claim to improve cache behavior for a child agent. Cache
+  reuse lives in the fork provider, not in this plugin.
+
 ## Why
 
 The 0.1.0 plugin was written against DSH `0.1.0-rc.6`. It is now wrong in five
@@ -142,8 +166,8 @@ deep-merged; invalid types or a malformed JSON file throw with the file path.
 ```js
 {
   providers: {
-    claude:   { enabled: true, subagentProvider: 'claude-code' },
-    codex:    { enabled: true, subagentProvider: 'codex' },
+    claude:   { enabled: true },   // no subagentProvider by default
+    codex:    { enabled: true },   // no subagentProvider by default
     opencode: { enabled: true },
     zcode:    { enabled: false, commandTemplate: '', resumeTemplate: '' },
   },
@@ -153,7 +177,10 @@ deep-merged; invalid types or a malformed JSON file throw with the file path.
 }
 ```
 
-`subagentProvider` is optional; omitting it keeps a provider CLI-only.
+`subagentProvider` is optional and **absent by default**, because the official
+seam already owns those providers through its own tools. Set it only when a
+caller deliberately wants this plugin to drive an official provider and await
+the result.
 
 ## Tools
 

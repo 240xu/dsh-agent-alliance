@@ -316,8 +316,12 @@ export function registerTools(ctx, { resolver, registry, config, home, io }) {
   disposers.push(ctx.tools.register({
     name: 'agent_dispatch',
     description: [
-      'Dispatch one task headlessly to an external coding agent as a subagent and return its answer.',
-      'Providers: claude | codex | opencode | zcode. The official subagent provider is preferred when the deployment registers one for a live parent agent.',
+      'Dispatch one task to an EXTERNAL coding agent (its own CLI and account, outside this harness) and wait for its answer.',
+      'Providers: claude | codex | opencode | zcode. These are agents the built-in delegation tools cannot reach:',
+      '`subagent` and `subagent_fork` delegate to in-harness children, so prefer them for anything an in-harness',
+      'child can do — `subagent_fork` also inherits this conversation and stays cache-eligible.',
+      'Use this tool when the work specifically needs one of these external agents, when the answer must arrive',
+      'inline in this result instead of as a later notification, or to continue an external session.',
       COST_WARNING,
       'background:true starts a background job and returns its id; without a jobs service the call runs inline and returns the foreground value.',
       'resumeSessionId continues one of that agent\'s existing sessions (find ids with agent_sessions).',
@@ -405,7 +409,9 @@ export function registerTools(ctx, { resolver, registry, config, home, io }) {
   disposers.push(ctx.tools.register({
     name: 'agent_roundtable',
     description: [
-      'Run a roundtable: send the same question to several external agents concurrently and return their answers side by side for your own synthesis.',
+      'Run a roundtable: send the same question to several EXTERNAL agents concurrently and return their answers side by side for your own synthesis.',
+      'This compares independent external agents. To delegate work to in-harness children, use the `subagent` or',
+      '`subagent_fork` tools instead — the latter inherits this conversation and stays cache-eligible.',
       COST_WARNING,
       'Every member spends quota and may read or write files in its cwd.',
       'rounds is clamped to 1..3; from round 2 on each member sees the others\' previous answers. Default providers are every configured backend.',

@@ -13,10 +13,18 @@ import { join } from 'node:path'
  * @returns {object} default providers, defaults, and panel configuration
  */
 export function defaultConfig() {
+  // No `subagentProvider` by default. DSH already ships a first-class official
+  // delegation path — the global `subagent` (spawn) and `subagent_fork` (fork,
+  // which inherits the parent prefix and stays KV-cache eligible) tools from
+  // dsh-base — and enabling a vendor bundle adds `subagent_codex` /
+  // `subagent_claude_code`. Pointing our own tool at those same providers
+  // duplicated them with opposite ergonomics (ours blocks, theirs returns an id)
+  // and made two tools compete for one provider. They stay supported as an
+  // opt-in for callers that specifically want this plugin to await the answer.
   return {
     providers: {
-      claude: { enabled: true, subagentProvider: 'claude-code' },
-      codex: { enabled: true, subagentProvider: 'codex' },
+      claude: { enabled: true },
+      codex: { enabled: true },
       opencode: { enabled: true },
       zcode: { enabled: false, commandTemplate: '', resumeTemplate: '' },
     },

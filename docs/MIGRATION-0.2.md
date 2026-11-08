@@ -133,11 +133,17 @@ row config  >  ~/.dsh/dsh-agent-alliance.json  >  内建默认
 
 旧的 JSON 文件继续有效；设 `legacyConfigFile: false` 可让行内配置独占。
 
-新增字段 `providers.<id>.subagentProvider`（默认 `claude` → `claude-code`、`codex` → `codex`），
-省略即该家只走 CLI。
+新增字段 `providers.<id>.subagentProvider`，**默认不设置**。
+
+> 早期 0.2.0 草稿把它默认成 `claude` → `claude-code`、`codex` → `codex`，现已撤销。原因：
+> DSH 自带 `subagent` / `subagent_fork`（后者继承父对话前缀、可复用 KV 缓存），启用 vendor 包还会
+> 多出 `subagent_codex` / `subagent_claude_code`。再把本插件的阻塞式工具默认绑到同一批 provider 上，
+> 会让两个工具争用同一个后端、且语义相反。需要本插件"同步取答案"的语义时才显式打开。
 
 ## 需要人工确认的残留
 
 - `~/.dsh/dsh-agent-alliance.json` 里如果有旧字段（如 panel 相关的手工键），0.2.0 会原样保留但不读取未知键。
 - 官方子代理包自带原生 Codex / Claude Code payload，与系统里单独装的 CLI 互不影响；
   `subagentProvider` 走官方包时不使用 `claude`/`codex` 的系统 PATH。
+- **升级后默认行为变了**：如果你之前依赖本插件自动走官方 backend，升级后 `agent_dispatch` 会回到
+  CLI 包装层。要保留原行为，请显式配置 `providers.<id>.subagentProvider`。

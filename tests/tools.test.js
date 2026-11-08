@@ -591,3 +591,27 @@ test('a cancelled job settles even when the producer ignores its signal', async 
   const outcome = await hooks.done
   assert.equal(outcome.status, 'killed')
 })
+
+test('tool descriptions distinguish this plugin from the built-in delegation tools', async () => {
+  const { registerTools } = await import('../src/tools.js')
+  const { defaultConfig } = await import('../src/config.js')
+  const tools = []
+  registerTools(
+    { tools: { register: (def) => { tools.push(def); return () => {} } }, get: () => undefined },
+    { resolver: { resolve: () => ({}), list: () => [] }, registry: { list: () => [], get: () => ({}) }, config: defaultConfig(), home: '/tmp' },
+  )
+  const dispatch = tools.find((t) => t.name === 'agent_dispatch').description
+  const roundtable = tools.find((t) => t.name === 'agent_roundtable').description
+
+  // DSH ships `subagent` and `subagent_fork`; the model must be told which tool
+  // owns which job, or it picks the external one for in-harness work and loses
+  // cache reuse and the in-harness lifecycle.
+  for (const text of [dispatch, roundtable]) {
+    assert.match(text, /subagent_fork/, 'the description must name the built-in fork tool')
+    assert.match(text, /in-harness/, 'the description must say what the built-in tools cover')
+  }
+  assert.match(dispatch, /EXTERNAL/, 'dispatch is the external-agent path')
+  // The old wording claimed the official provider is preferred; that stopped
+  // being true once the default binding was removed.
+  assert.doesNotMatch(dispatch, /official subagent provider is preferred/)
+})

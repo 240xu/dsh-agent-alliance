@@ -1,66 +1,114 @@
 # dsh-agent-alliance
 
-DeepSeek Harness 双面插件：让 DSH 与 **Claude Code / Codex / OpenCode / ZCode** 协同——
-优先走官方子代理后端派发，回落到各家 CLI 包装层；附带圆桌讨论、外部会话浏览与历史会话导入。
+DeepSeek Harness **扩展插件**：把 **Claude Code / Codex / OpenCode / ZCode** 这些**外部 agent** 接进 DSH——
+派发任务、并发圆桌、浏览它们的历史会话、把历史事件级导入为可继续的 DSH 会话。
 
-> **0.2.0 是一次规范化重写**：对齐 DSH `0.2.1-rc.2`（会话格式 v4、jobs 契约、client-module 契约），
-> 并把 Codex / Claude Code 的派发切到官方实验化子代理包。从 0.1.0 升级见
-> [docs/MIGRATION-0.2.md](docs/MIGRATION-0.2.md)。
+> **定位：只做官方没有的事。**
+> DSH 本身已经内置了完整的子智能体体系（见下），本插件**不重复**它。我们负责的是**外部 agent**
+> ——那些不在 DSH 进程内、有自己 CLI 与账号体系、历史存在自己目录里的编码助手。
 
-## 设计：两层派发
+## 先搞清楚：DSH 自带什么
 
-派发一个任务时，插件按以下顺序选后端：
+在装本插件之前，你的每个会话**已经**有这些（来自 `dsh-base`，无需任何配置）：
 
-| 顺序 | 后端 | 条件 | 特点 |
-|---|---|---|---|
-| 1 | `subagent`（官方） | 配置里 `subagentProvider` 指向的 provider 已注册在 `ctx.subagents`，**且** 调用方是一个活的 Agent | 官方实验包托管生命周期与模型；权限由**包自身的 `permissionMode` 默认值**决定（见下）；一次性、隔离、只回最终答复 |
-| 2 | `cli`（包装层） | 其余情况（无 Agent 身份、未装官方包、用到 `resumeSessionId`） | 直调本机 CLI；可续聊外部会话；历史会话可浏览/导入 |
+| 官方工具 | 作用 | 关键特性 |
+|---|---|---|
+| `subagent` | 派发一个**自包含**任务给子代理（spawn provider） | 子代理空上下文；立即返回 id，完成时通知 |
+| `subagent_fork` | 派发一个**延续本对话**的子任务（fork provider） | 子代理继承父对话所有已完成轮次 |
 
-官方后端来自这两个包，在「设置 → 插件」里启用即可，插件会在运行时检查 `ctx.subagents` 是否注册了对应 provider（**不检查包的 payload 是否存在**）：
+`subagent_fork` 是为 **KV cache 复用**设计的：base bundle 的注释明确写着
 
-- `@deepseek-ai/dsh-subagent-codex` → provider `codex`
-- `@deepseek-ai/dsh-subagent-claude-code` → provider `claude-code`
+> Fork omits model selection so provider/model stay equal to the parent and the inherited
+> history remains eligible for **KV Cache reuse**.
 
-> 这两个名字由**官方包自己的 `providerName` 配置**决定（默认就是上面这两个）。如果你在启用官方包时改了
-> `providerName`，必须把本插件的 `providers.<id>.subagentProvider` 改成同一个名字，否则官方路径会
-> **静默不生效**并回落到 CLI。面板「状态」标签会在 `detail` 里说明真实的注册名，便于发现这种不一致。
+也就是说，**想复用父会话缓存，用 `subagent_fork`，不要用本插件**。这是 DSH 内部最省钱的派发方式，
+本插件提供的任何外部路径都做不到这一点（外部 CLI 是独立进程，缓存不共享）。
 
-官方子代理是**一次性**的：`resumeSessionId` 在这条路上会被明确拒绝，需要续聊请走 CLI 包装层
-（也可用 `agent_sessions` 找到外部会话 id 后显式指定）。每个工具结果都带 `backend` 字段，标明这次走的是哪条路。
+启用官方 vendor 包后还会多出 `subagent_codex` / `subagent_claude_code`（同样是异步、池化、带 system prompt 引导）。
+
+**结论：需要 DSH 内部子代理时，用官方工具。本插件不解这个问题。**
+
+## 本插件解决什么
+
+外部 agent 有三个官方没有的问题：
+
+1. **它们不在 DSH 里** —— 没有 provider 注册，官方工具够不着
+2. **它们的会话历史在别处** —— `~/.claude/projects`、`~/.codex/sessions`、`opencode.db`、`zcode` 的 sqlite
+3. **它们要并发对比** —— 同一问题发给多家，收集各自观点
+
+对应的六件工具：
+
+| 工具 | 解决什么 |
+|---|---|
+| `agent_dispatch` | 把任务派给外部 CLI，**同步**拿回答（这是与官方异步工具的主要差异） |
+| `agent_roundtable` | 同一问题并发发给多家外部 agent，可多轮辩论 |
+| `agent_sessions` / `agent_session_read` | 浏览外部 agent 自己的历史会话 |
+| `agent_import_scan` / `agent_import` | 把外部会话**事件级导入**为可继续的 DSH 会话 |
+
+## 可选：把官方 backend 也接进本插件的派发
+
+本插件**默认不绑定**官方 provider（`subagentProvider` 默认为空）。如果你确实希望用
+`agent_dispatch` 的**同步**语义去驱动官方 Codex / Claude Code，可以显式打开：
+
+```yaml
+- id: agent-alliance
+  config:
+    providers:
+      codex: { subagentProvider: 'codex' }
+      claude: { subagentProvider: 'claude-code' }
+```
+
+需要先在「设置 → 插件」启用 `@deepseek-ai/dsh-subagent-codex` / `-claude-code`。插件会在运行时检查
+`ctx.subagents` 是否注册了对应 provider（**不检查包的 payload 是否存在**）。
+
+> provider 名字由**官方包自己的 `providerName` 配置**决定（默认 `codex` / `claude-code`）。
+> 如果你改了它，必须把 `subagentProvider` 改成同名，否则官方路径**静默不生效**并回落到 CLI。
+> 面板「状态」标签的 `detail` 会显示真实注册名。
 
 ### ⚠️ 权限模式不由本插件设置
 
-两个官方包的 `permissionMode` 默认值**不同**，而本插件**从不覆盖**它们：
+两个官方包的 `permissionMode` 默认值**不同**，本插件**从不覆盖**：
 
 | 包 | 默认 `permissionMode` | 实际含义 |
 |---|---|---|
-| `dsh-subagent-codex` | `never` | 不弹审批；执行失败在原生 sandbox 下返回给模型 |
+| `dsh-subagent-codex` | `never` | 不弹审批（只发 `approvalPolicy: never`，**不传 sandbox**，用 Codex 原生沙箱配置） |
 | `dsh-subagent-claude-code` | `dontAsk` | 未预先授权的操作**直接拒绝**而非询问 |
 
 后果需要你自己判断：
 
-- 走 **codex** 官方后端时，任务在 sandbox 内自动执行，不打扰你，但也不经你确认。
-- 走 **claude-code** 官方后端时，**会改文件的任务可能做不动**：授权请求被拒，而模型可能仍返回一段
-  说明性文字，本插件会把它当作成功结果（`stopReason === 'completed'` 且有文本）。
+- 走 **codex** 官方后端：任务在原生沙箱内自动执行，不打扰你，但也不经你确认。
+- 走 **claude-code** 官方后端：**会改文件的任务可能做不动**——授权请求被拒，而模型可能仍返回一段
+  说明性文字，本插件会把它当作成功结果。
 
-要改变这些行为，请在启用官方包的 patch 行里显式配置 `permissionMode`，而不是期望本插件替你选。
+要改行为，请在启用官方包的 patch 行里显式配置 `permissionMode`，而不是期望本插件替你选。
 
 ### 环境变量
 
-两条派发路径对子进程环境的处理不同：
+两条派发路径对子进程环境的处理**一致**：
 
-- **官方后端**：由 host 的 subagent seam 清理 `*KEY*` / `*PASSWORD*` / `*SECRET*` / `*TOKEN*` 与全部 `DSH_*` 变量。
-- **CLI 包装层**（面板走这条）：本插件同样清理这些名字（`src/runner.js`），因此不会把宿主的 API key
+- **官方后端**：由 host 的 subagent seam 清理 `*KEY*` / `*PASSWORD*` / `*SECRET*` / `*TOKEN*` 与全部 `DSH_*`。
+- **CLI 包装层**（面板走这条）：本插件同样清理这些名字（`src/runner.js`），不会把宿主的 API key
   交给第三方 CLI。显式传入 `env` 的条目会被保留——那是调用方的明确选择。
 
-## 模型工具（6 个）
+## 优先级建议
 
-| 工具 | 说明 |
+| 你的需求 | 用什么 |
 |---|---|
-| `agent_dispatch` | 派发任务；前台等待或后台 job（`job_output`/`job_kill`）；受 `maxConcurrent` 并发上限约束（排队期间取消立即生效） |
-| `agent_roundtable` | 同一问题并发发给多个 agent，可跑 1–3 轮辩论（后续轮可见其他 agent 上一轮发言），输出对比文本 |
-| `agent_sessions` / `agent_session_read` | 浏览 / 读取外部 agent 本机历史会话（只读） |
-| `agent_import_scan` / `agent_import` | 扫描四家历史会话并事件级导入为可继续的 DSH 会话（幂等、自动归组工作区、预热投影缓存） |
+| 让子代理做自包含的研究/实现 | 官方 `subagent` |
+| 让子代理接着本对话做后续分析 | 官方 `subagent_fork`（**还能吃缓存**） |
+| 用官方 Codex / Claude Code 后端 | 官方 `subagent_codex` / `subagent_claude_code` |
+| 调度本机的 Claude Code / Codex / OpenCode / ZCode CLI | 本插件 `agent_dispatch` |
+| 同一问题多家对比 | 本插件 `agent_roundtable` |
+| 翻/导入外部 agent 的历史 | 本插件 `agent_sessions` / `agent_import` |
+
+## 模型工具细节
+
+| 工具 | 补充说明 |
+|---|---|
+| `agent_dispatch` | 前台等待或后台 job（`job_output`/`job_kill`）；受 `maxConcurrent` 并发上限约束（排队期间取消立即生效）；官方后端无法应用 `model` 覆盖时会返回 `ignored: ["model"]` |
+| `agent_roundtable` | 可跑 1–3 轮辩论；第 2 轮起把问题作为**严格前缀**再追加同伴发言（让缓存能复用），并排除成员自己的上一轮发言 |
+| `agent_sessions` / `agent_session_read` | 只读 |
+| `agent_import_scan` / `agent_import` | 幂等、自动归组工作区、预热投影缓存 |
 
 工具描述里写明了成本：**派发会真实消耗目标 agent 的额度，且它可能在 cwd 内读写文件**——重要操作先征得同意。
 
@@ -106,8 +154,10 @@ DeepSeek Harness 双面插件：让 DSH 与 **Claude Code / Codex / OpenCode / Z
 - id: agent-alliance
   config:
     providers:
-      claude:   { enabled: true, subagentProvider: 'claude-code' }
-      codex:    { enabled: true, subagentProvider: 'codex' }
+      # 默认不带 subagentProvider：官方工具已经覆盖那部分能力。
+      # 需要本插件的同步语义去驱动官方 backend 时再显式打开（见上文）。
+      claude:   { enabled: true }
+      codex:    { enabled: true }
       opencode: { enabled: true }
       zcode:    { enabled: false, commandTemplate: '', resumeTemplate: '' }
     defaults: { timeoutMs: 300000, maxConcurrent: 3, defaultCwd: '' }
@@ -115,7 +165,7 @@ DeepSeek Harness 双面插件：让 DSH 与 **Claude Code / Codex / OpenCode / Z
     legacyConfigFile: true
 ```
 
-- `subagentProvider` 省略即该家只走 CLI 包装层
+- `subagentProvider` **默认为空**（该家只走 CLI 包装层）；显式填写才启用官方 backend 路径
 - `zcode` 走 `commandTemplate` 模板（`{prompt}` `{session}` `{cwd}`，单引号安全转义）
 - `maxConcurrent` 限制同时派发到外部 agent 的在飞数量；排队期间取消立即出队
 - 各家探测（**仅 CLI 路径**）：claude 经 grun；codex 绝对 node 入口；opencode 强制 TMPDIR 归一；
