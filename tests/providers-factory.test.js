@@ -30,3 +30,33 @@ test('buildProviders：zcode 配置透传（模板存在即 available）', async
   const states = await reg.detectAll()
   assert.equal(states.find(s => s.id === 'zcode').available, true)
 })
+
+test('configured provider paths override the Termux defaults in production wiring', async () => {
+  const { buildProviders } = await import('../src/providers.js')
+  const { loadConfig } = await import('../src/config.js')
+  // The CLI providers only accepted path overrides through `deps.paths`, which
+  // the production entry (buildProviders({ config })) never supplied. A user
+  // configuring an explicit binary path had no way to escape the Termux
+  // defaults on ordinary Linux.
+  const config = loadConfig({
+    providers: {
+      claude: { enabled: true, paths: { grun: '/custom/bin/grun', claudeBin: '/custom/bin/claude' } },
+    },
+  }, { file: '/tmp/alliance-no-such-file.json' })
+  let seenArgv
+  const registry = buildProviders({
+    config,
+    deps: { spawnCli: async ({ argv }) => { seenArgv = argv; return { code: 0, stdout: 'claude 1.0' } } },
+  })
+  const claude = registry.get('claude')
+  await claude.detect()
+  assert.deepEqual(seenArgv.slice(0, 2), ['/custom/bin/grun', '/custom/bin/claude'])
+})
+
+test('a malformed paths value is rejected at config load', async () => {
+  const { loadConfig } = await import('../src/config.js')
+  assert.throws(
+    () => loadConfig({ providers: { claude: { paths: { grun: 7 } } } }, { file: '/tmp/nope.json' }),
+    /non-empty string/,
+  )
+})

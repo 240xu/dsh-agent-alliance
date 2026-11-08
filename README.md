@@ -171,6 +171,27 @@ DeepSeek Harness **扩展插件**：把 **Claude Code / Codex / OpenCode / ZCode
 - 各家探测（**仅 CLI 路径**）：claude 经 grun；codex 绝对 node 入口；opencode 强制 TMPDIR 归一；
   宿主环境缺失时 runner 自动补 PATH/HOME/TMPDIR。官方后端使用包内自带的平台 payload，
   **不经过 grun 也不使用宿主 PATH 上的同名 CLI**。
+- **路径默认是 Termux/ARM64 时代的遗留值**（`$PREFIX` = `/data/data/com.termux/...`，且 claude 二进制
+  名硬编码 `claude-code-linux-arm64`）。在普通 x86_64 Linux 上，请**显式配置路径**，否则 `detect()`
+  会误报"路径不存在"而不是"未安装"：
+
+```yaml
+providers:
+  claude:
+    enabled: true
+    paths:
+      grun: /usr/bin/grun                    # 或直接指向 claude 的启动器
+      claudeBin: /usr/local/bin/claude
+      projectsRoot: /home/you/.claude/projects
+  codex:
+    enabled: true
+    paths:
+      codexJs: /usr/local/lib/node_modules/@openai/codex/bin/codex.js
+      sessionsRoot: /home/you/.codex/sessions
+```
+
+  `paths` 的具体键随各家而异（见 `src/provider/*.js` 的 `*DefaultPaths()`）。所有值必须是非空字符串；
+  配置错误会在加载时报错。
 
 ## 导入保真度
 

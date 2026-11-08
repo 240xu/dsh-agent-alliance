@@ -21,7 +21,135 @@ Read-only. No source was modified.
 
 ## C2 — `detectAll` parallel + budget (`15bc8c8`)
 
-*(pending)*
+**VERDICT: REGRESSION.** The budget works — `detectAll` returns promptly and
+never blocks `/state` — but it abandons the losing `detect()` instead of
+cancelling it. The orphaned probe keeps its `--version` child alive, and
+because `detectAll` is reachable from a polling route, orphans accumulate and
+delay process shutdown.
+
+### The mechanism
+
+`src/provider/types.js` `detectAll`:
+
+```js
+const timeout = new Promise((resolve) => {
+  timer = setTimeout(() => resolve({ available: false, detail: 'probe timed out' }), budgetMs)
+  timer.unref?.()
+})
+try {
+  const d = await Promise.race([p.detect(), timeout])
+  ...
+} finally {
+  if (timer !== undefined) clearTimeout(timer)
+}
+```
+
+`Promise.race` does not cancel the loser. `p.detect()` keeps running, and on
+every real provider that means a live `spawnCli` child
+(`src/provider/claude.js` `--version`, `codex.js`, `opencode.js` each pass
+`timeoutMs: 15000/20000/15000`). Those per-probe timeouts are what eventually
+reap the child — up to **20 s** after `detectAll` already answered.
+
+### Reproduction 1 — the child outlives the answer
+
+```
+$ node /tmp/C2b.mjs
+detectAll returned after 101ms -> [{"id":"slow","label":"Slow","available":false,"detail":"probe timed out"}]
+at return: child exited? false | the tool now shows available: false
+the orphaned --version child is STILL RUNNING: true
+4.2s later: child finally exited? true | detect() resolved? true
+```
+
+The panel is told the provider is unavailable while a probe for it is still
+executing. Cosmetic, but it also means a *correct* slow provider is reported
+`available: false, detail: 'probe timed out'` — the panel cannot distinguish
+"not installed" from "installed but the machine was busy for 2.5 s".
+
+### Reproduction 2 — orphans accumulate under polling
+
+```
+$ node /tmp/C2c.mjs
+poll 1: returned false | orphaned children alive: 1
+poll 2: returned false | orphaned children alive: 2
+poll 3: returned false | orphaned children alive: 3
+poll 4: returned false | orphaned children alive: 4
+peak concurrent orphans: 4
+```
+
+This is worse in the real route because `detectRows` in `src/http.js:346-362`
+caches the **promise** for 30 s — but only *after* `detectAll` settles. If the
+TTL expires while a probe is still orphaned, the next `/state` starts a fresh
+sweep. With the panel's 30 s TTL and four providers whose probes can each run
+20 s, a machine with three hung CLIs can stack sweeps.
+
+### Reproduction 3 — process shutdown is delayed
+
+```
+$ node /tmp/C2f.mjs
+detectAll returned at 101 ms. Now letting the script end naturally...
+PROCESS EXITED at 3154 ms after detectAll returned
+```
+
+A 100 ms budget produced a **3 s** shutdown delay. For a `dsh` CLI invocation
+that renders `/state` once and exits (headless/scripted use), this is the
+difference between a 200 ms command and a 3 s one. For the long-lived Web host
+it is invisible — which is exactly why it went unnoticed.
+
+### What is *correct* — and what the commit got right
+
+Two sub-claims tested and clean:
+
+1. **The `unref()` on the budget timer is not a starvation bug.** I expected
+   the timer never to fire in a handle-free process; it does, because the
+   `Promise.race` microtask still runs. Verified:
+
+```
+$ node /tmp/C2d.mjs
+settled after 115 ms: [{"id":"hung","label":"Hung","available":false,"detail":"probe timed out"}]
+```
+
+2. **No unhandled rejection from a late-throwing orphan.** `try/catch` around
+   the `await` covers the race result, and the loser's rejection is swallowed
+   by the already-settled race. Verified: `unhandledRejection` never fired
+   (`/tmp/C2e.mjs`).
+
+So the fix is not wrong — it is one `AbortController` short of correct.
+
+### Corrected form
+
+Thread a signal through `detect()` so the losing probe can actually be stopped,
+and kill the child rather than waiting for its own 20 s timeout:
+
+```js
+async detectAll({ budgetMs = 2500, signal } = {}) {
+  const rows = await Promise.all([...byId.values()].map(async (p) => {
+    if (typeof p.detect !== 'function') return { id: p.id, label: p.label, available: false, detail: 'no detect()' }
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(new Error('probe timed out')), budgetMs)
+    try {
+      const d = await p.detect({ signal: controller.signal })
+      return { id: p.id, label: p.label, ...d }
+    } catch (err) {
+      return { id: p.id, label: p.label, available: false,
+               detail: String(err?.message || err) === 'probe timed out'
+                 ? 'probe timed out' : String(err?.message || err) }
+    } finally { clearTimeout(timer) }
+  }))
+  return rows
+}
+```
+
+and have each `detect()` forward that signal into its `spawnCli({ signal })`
+call — `spawnCli` already kills the child on abort (`src/runner.js` `onAbort`),
+so the whole orphan class disappears. Minimal alternative if signals are too
+invasive: put the budget **inside** `spawnCli` by passing
+`timeoutMs: Math.min(budgetMs, 15000)`, so the child cannot outlive the answer.
+
+**Severity: medium.** No user-visible failure in the Web host; it costs a child
+process and up to 20 s of shutdown latency per timed-out probe, and it makes
+`available: false` ambiguous between "missing" and "slow".
+
+---
 
 ## C3 — `normalizeEnv` credential scrub (`832f314`)
 

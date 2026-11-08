@@ -37,7 +37,8 @@
 
 ## 技术债
 
-- `src/provider/*` 仍按 Termux 优先的路径探测（`$PREFIX`），在普通 Linux 上依赖用户配置覆盖。
-  可改成「按命令名探测 + 显式路径覆盖」的对称形式。
+- `src/provider/*` 仍按 Termux 优先的路径探测（`$PREFIX`），且 claude 二进制名硬编码 `linux-arm64`。
+  现已在 `config.providers.<id>.paths` 提供**可用的显式覆盖**（第三轮审计发现原先的覆盖入口
+  `deps.paths` 在生产路径从未被传入，只有测试能用）。仍可进一步改成「按命令名探测 PATH 优先」的对称形式。
 - 面板没有单元测试，只有 `manifest-guard` 的结构守卫；渲染逻辑靠人工点验。
 - `docs/VERIFICATION-P1.md` 保留了大量 0.1.0 时代的验证记录，只作历史参考，其中的契约描述已过期。

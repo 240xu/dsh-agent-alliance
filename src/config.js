@@ -109,6 +109,16 @@ function validateLayer(layer, origin) {
       if (entry.resumeTemplate !== undefined && typeof entry.resumeTemplate !== 'string') {
         invalid(key + '.resumeTemplate', 'a string', origin)
       }
+      // Explicit executable/session-store path overrides. Validated here so a
+      // malformed value fails at load instead of silently becoming a spread.
+      if (entry.paths !== undefined) {
+        if (!isPlainObject(entry.paths)) invalid(key + '.paths', 'an object', origin)
+        for (const [pathKey, value] of Object.entries(entry.paths)) {
+          if (typeof value !== 'string' || value === '') {
+            invalid(key + '.paths.' + pathKey, 'a non-empty string', origin)
+          }
+        }
+      }
     }
   }
   if (defaults !== undefined) {
