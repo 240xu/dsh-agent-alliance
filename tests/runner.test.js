@@ -86,3 +86,25 @@ test('credential-shaped and DSH_ ambient variables never reach an external CLI',
     process.env = saved
   }
 })
+
+test('the credential scrub matches the host SENSITIVE_ENV_PATTERN, no wider', async () => {
+  const { normalizeEnv } = await import('../src/runner.js')
+  // The host exports /KEY|PASSWORD|SECRET|TOKEN/i and accepts that it also
+  // drops names like MONKEY and KEYBOARD. Widening our pattern further (with
+  // CREDENTIAL/SESSION) was tried and removed SESSION_NAME from the child,
+  // which the host does NOT drop. Pin the boundary.
+  const saved = { ...process.env }
+  try {
+    process.env.SESSION_NAME = 'kept-by-host'
+    process.env.MONKEY = 'dropped-by-host-too'
+    process.env.API_KEY = 'secret'
+    process.env.DSH_INTERNAL = 'internal'
+    const env = normalizeEnv()
+    assert.equal(env.SESSION_NAME, 'kept-by-host', 'must not be more aggressive than the host')
+    assert.equal(env.MONKEY, undefined, 'the host drops this too; we follow it')
+    assert.equal(env.API_KEY, undefined)
+    assert.equal(env.DSH_INTERNAL, undefined)
+  } finally {
+    process.env = saved
+  }
+})

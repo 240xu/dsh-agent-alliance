@@ -18,13 +18,19 @@ function termuxPrefix() {
 /**
  * Names whose values look like credentials and must not reach an external agent.
  *
- * The DSH subagent seam scrubs the same classes (`KEY|PASSWORD|SECRET|TOKEN`
+ * The DSH subprocess seam scrubs the same names (`KEY|PASSWORD|SECRET|TOKEN`
  * plus every `DSH_*` fact) before spawning an official child. This CLI path is
  * used by the panel and by every non-agent dispatch, so it needs the same
  * treatment: the panel's dispatch would otherwise hand a third-party CLI the
  * host's API keys.
  */
-const CREDENTIAL_NAME = /(?:KEY|PASSWORD|PASSWD|SECRET|TOKEN|CREDENTIAL|SESSION)/i
+// Matches the host's own `SENSITIVE_ENV_PATTERN` exactly
+// (packages/subprocess/subprocess/src/index.ts:47). Do not widen it: a broader
+// pattern (PASSWD|CREDENTIAL|SESSION) was tried and silently removed legitimate
+// names such as MONKEY, KEYBOARD, TOKENIZER and SESSION_NAME from the child.
+// The broad substring match is the host's deliberate tradeoff — a name like
+// MONKEY is dropped rather than a credential leaking.
+const CREDENTIAL_NAME = /KEY|PASSWORD|SECRET|TOKEN/i
 
 /**
  * Build the child environment for one external agent CLI.

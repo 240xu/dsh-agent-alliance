@@ -84,3 +84,23 @@ test('detectAll probes in parallel and stays inside its budget', async () => {
     assert.match(String(row.detail), /timed out/)
   }
 })
+
+test('a hung provider probe still settles within the budget', async () => {
+  const { createRegistry, defineProvider } = await import('../src/provider/types.js')
+  const hung = defineProvider({
+    id: 'hung',
+    label: 'Hung',
+    dispatch: async () => ({ text: '' }),
+    detect: () => new Promise(() => {}), // a CLI whose --version never returns
+  })
+  const registry = createRegistry([hung])
+  const started = Date.now()
+  const rows = await Promise.race([
+    registry.detectAll({ budgetMs: 120 }),
+    new Promise((_resolve, reject) => setTimeout(() => reject(new Error('detectAll hung')), 1500)),
+  ])
+  const elapsed = Date.now() - started
+  assert.ok(elapsed < 1000, `detectAll took ${elapsed}ms; a hung probe must time out`)
+  assert.equal(rows[0].available, false)
+  assert.match(String(rows[0].detail), /timed out/)
+})
