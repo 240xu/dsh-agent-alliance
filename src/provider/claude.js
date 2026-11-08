@@ -28,9 +28,9 @@ export function makeClaudeProvider({ deps = {}, config = {} } = {}) {
   const spawnCli = deps.spawnCli || defaultSpawnCli
   const paths = { ...claudeDefaultPaths(), ...(deps.paths || {}) }
 
-  async function detect() {
+  async function detect({ signal } = {}) {
     try {
-      const r = await spawnCli({ argv: [paths.grun, paths.claudeBin, '--version'], timeoutMs: 15000 })
+      const r = await spawnCli({ argv: [paths.grun, paths.claudeBin, '--version'], timeoutMs: 15000, signal })
       if (r.code !== 0) return { available: false, detail: (r.stderr || r.stdout).slice(-200) }
       return { available: true, version: r.stdout.trim().split('\n')[0] }
     } catch (err) {

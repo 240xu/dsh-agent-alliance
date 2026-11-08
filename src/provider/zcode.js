@@ -37,7 +37,8 @@ export function makeZcodeProvider({ deps = {}, config = {}, openDb } = {}) {
       .replaceAll('{cwd}', () => shellQuote(cwd || '.'))
   }
 
-  async function detect() {
+  async function detect({ signal: _signal } = {}) {
+    // Template-only provider: probing reads config, never spawns a process.
     if (config.enabled === false) {
       return { available: false, detail: 'zcode 未启用（config.providers.zcode.enabled=false）' }
     }

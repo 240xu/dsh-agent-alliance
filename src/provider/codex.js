@@ -27,9 +27,9 @@ export function makeCodexProvider({ deps = {}, config = {} } = {}) {
   const spawnCli = deps.spawnCli || defaultSpawnCli
   const paths = { ...codexDefaultPaths(), ...(deps.paths || {}) }
 
-  async function detect() {
+  async function detect({ signal } = {}) {
     try {
-      const r = await spawnCli({ argv: [process.execPath, paths.codexJs, '--version'], timeoutMs: 20000 })
+      const r = await spawnCli({ argv: [process.execPath, paths.codexJs, '--version'], timeoutMs: 20000, signal })
       if (r.code !== 0) return { available: false, detail: (r.stderr || r.stdout).slice(-200) }
       const m = r.stdout.match(/codex-cli\s+(\S+)/i)
       return { available: true, version: m ? m[1] : r.stdout.trim().split('\n')[0] }

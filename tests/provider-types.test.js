@@ -104,3 +104,31 @@ test('a hung provider probe still settles within the budget', async () => {
   assert.equal(rows[0].available, false)
   assert.match(String(rows[0].detail), /timed out/)
 })
+
+test('a timed-out probe aborts the losing detect so its child is reaped', async () => {
+  const { createRegistry, defineProvider } = await import('../src/provider/types.js')
+  const { spawnCli } = await import('../src/runner.js')
+  let aborted = false
+  const slow = defineProvider({
+    id: 'slow',
+    label: 'Slow',
+    dispatch: async () => ({ text: '' }),
+    async detect({ signal } = {}) {
+      const r = await spawnCli({
+        argv: [process.execPath, '-e', 'setTimeout(()=>{},5000)'],
+        timeoutMs: 5000,
+        signal,
+      })
+      aborted = r.aborted === true
+      return { available: r.code === 0 }
+    },
+  })
+  const registry = createRegistry([slow])
+  const rows = await registry.detectAll({ budgetMs: 120 })
+  assert.equal(rows[0].available, false)
+  assert.match(String(rows[0].detail), /timed out/)
+  await new Promise((resolve) => setTimeout(resolve, 120))
+  // Without the abort, the `--version` child would live until its own 5s
+  // timeout; a polling /state route would accumulate orphans.
+  assert.equal(aborted, true, 'the losing probe must observe the abort')
+})

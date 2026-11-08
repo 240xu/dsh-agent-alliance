@@ -28,10 +28,10 @@ export function makeOpencodeProvider({ deps = {}, config = {} } = {}) {
   const paths = { ...opencodeDefaultPaths(), ...(deps.paths || {}) }
   const openDb = deps.openDb || null // 测试注入；生产走 node:sqlite 惰性加载
 
-  async function detect() {
+  async function detect({ signal } = {}) {
     try {
       const r = await spawnCli({
-        argv: [paths.opencodeBin, '--version'], timeoutMs: 15000,
+        argv: [paths.opencodeBin, '--version'], timeoutMs: 15000, signal,
         env: { TMPDIR: prefix() + '/tmp' },
       })
       if (r.code !== 0) return { available: false, detail: (r.stderr || r.stdout).slice(-200) }

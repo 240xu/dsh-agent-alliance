@@ -40,23 +40,27 @@ export function createRegistry(providers) {
         if (typeof p.detect !== 'function') {
           return { id: p.id, label: p.label, available: false, detail: 'no detect()' }
         }
+        const controller = new AbortController()
         let timer
         const timeout = new Promise((resolve) => {
           // Keep this timer REFERENCED. `unref()` was tried: when a provider's
           // detect() never settles and no other ref'd handle remains, the event
           // loop drains and the whole detectAll() promise hangs instead of
           // resolving with "probe timed out" after budgetMs.
-          timer = setTimeout(() => resolve({ available: false, detail: 'probe timed out' }), budgetMs)
+          timer = setTimeout(() => {
+            // The losing detect() owns a spawned `--version` child. Aborting
+            // the signal lets spawnCli kill it now instead of leaving an
+            // orphan alive for up to the provider's own 15-20s timeout.
+            controller.abort(new Error('probe timed out'))
+            resolve({ available: false, detail: 'probe timed out' })
+          }, budgetMs)
         })
         try {
-          const d = await Promise.race([p.detect(), timeout])
+          const d = await Promise.race([p.detect({ signal: controller.signal }), timeout])
           return { id: p.id, label: p.label, ...d }
         } catch (err) {
           return { id: p.id, label: p.label, available: false, detail: String(err?.message || err) }
         } finally {
-          // A slow detect() may still be running after the race. Its promise is
-          // detached here; a real spawnCli owns its own timeout and reaps its
-          // child, so no reference is retained by this registry.
           if (timer !== undefined) clearTimeout(timer)
         }
       }))
