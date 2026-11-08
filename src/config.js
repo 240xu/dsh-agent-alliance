@@ -94,6 +94,24 @@ function invalid(key, expectation, origin) {
 function validateLayer(layer, origin) {
   if (!isPlainObject(layer)) invalid('config', 'a JSON object', origin)
   const { providers, defaults, panel, legacyConfigFile } = layer
+  // A typo in a config key used to be accepted silently (e.g. `maxConcurrents`
+  // left the real `maxConcurrent` at its default). Reject unknown keys so a
+  // misconfiguration fails at load instead of quietly doing nothing.
+  const topKeys = new Set(['providers', 'defaults', 'panel', 'legacyConfigFile'])
+  for (const key of Object.keys(layer)) {
+    if (!topKeys.has(key)) invalid('config.' + key, 'a known config key', origin)
+  }
+  if (defaults !== undefined && isPlainObject(defaults)) {
+    const defaultKeys = new Set(['timeoutMs', 'maxConcurrent', 'defaultCwd'])
+    for (const key of Object.keys(defaults)) {
+      if (!defaultKeys.has(key)) invalid('defaults.' + key, 'a known defaults key', origin)
+    }
+  }
+  if (panel !== undefined && isPlainObject(panel)) {
+    for (const key of Object.keys(panel)) {
+      if (key !== 'enabled') invalid('panel.' + key, 'a known panel key', origin)
+    }
+  }
   if (providers !== undefined) {
     if (!isPlainObject(providers)) invalid('providers', 'an object keyed by provider id', origin)
     for (const [id, entry] of Object.entries(providers)) {

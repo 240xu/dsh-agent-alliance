@@ -326,6 +326,13 @@ export function registerTools(ctx, { resolver, registry, config, home, io }) {
       'background:true starts a background job and returns its id; without a jobs service the call runs inline and returns the foreground value.',
       'resumeSessionId continues one of that agent\'s existing sessions (find ids with agent_sessions).',
     ].join('\n'),
+    // The registry defaults an undeclared tool to `exclusive`, which forces
+    // every call into its own group of one. Our semaphore already bounds
+    // real concurrency, so declaring these parallel-safe lets calls issued
+    // in one assistant message actually overlap (official tool-subagent does
+    // the same). `agent_roundtable` and `agent_import` stay exclusive: they
+    // mutate shared state.
+    isConcurrencySafe: () => true,
     parameters: params({
       provider: { type: 'string', description: 'Target agent: claude | codex | opencode | zcode' },
       prompt: { type: 'string', description: 'The task to hand to that agent' },
@@ -515,6 +522,13 @@ export function registerTools(ctx, { resolver, registry, config, home, io }) {
       'List the local session history of one external agent (claude | codex | opencode | zcode), optionally filtered by text.',
       'Read-only. Use it to find a session id to resume with agent_dispatch or to import with agent_import.',
     ].join('\n'),
+    // The registry defaults an undeclared tool to `exclusive`, which forces
+    // every call into its own group of one. Our semaphore already bounds
+    // real concurrency, so declaring these parallel-safe lets calls issued
+    // in one assistant message actually overlap (official tool-subagent does
+    // the same). `agent_roundtable` and `agent_import` stay exclusive: they
+    // mutate shared state.
+    isConcurrencySafe: () => true,
     parameters: params({
       provider: { type: 'string', description: 'claude | codex | opencode | zcode' },
       query: { type: 'string', description: 'Filter by title, cwd, or id substring' },
@@ -542,6 +556,13 @@ export function registerTools(ctx, { resolver, registry, config, home, io }) {
       'Read the transcript of one external agent session, truncated to maxChars, to recover context before continuing or importing it.',
       'Read-only.',
     ].join('\n'),
+    // The registry defaults an undeclared tool to `exclusive`, which forces
+    // every call into its own group of one. Our semaphore already bounds
+    // real concurrency, so declaring these parallel-safe lets calls issued
+    // in one assistant message actually overlap (official tool-subagent does
+    // the same). `agent_roundtable` and `agent_import` stay exclusive: they
+    // mutate shared state.
+    isConcurrencySafe: () => true,
     parameters: params({
       provider: { type: 'string', description: 'claude | codex | opencode | zcode' },
       sessionId: { type: 'string', description: 'External session id returned by agent_sessions' },
@@ -565,6 +586,13 @@ export function registerTools(ctx, { resolver, registry, config, home, io }) {
       'Scan the local session history of the supported external agents (claude | codex | opencode | zcode) and report what can be imported and what already was.',
       'Read-only; writes nothing.',
     ].join('\n'),
+    // The registry defaults an undeclared tool to `exclusive`, which forces
+    // every call into its own group of one. Our semaphore already bounds
+    // real concurrency, so declaring these parallel-safe lets calls issued
+    // in one assistant message actually overlap (official tool-subagent does
+    // the same). `agent_roundtable` and `agent_import` stay exclusive: they
+    // mutate shared state.
+    isConcurrencySafe: () => true,
     parameters: params({
       provider: { type: 'string', description: 'Scan only this provider; omit to scan every one' },
       query: { type: 'string', description: 'Filter by title, cwd, or id substring' },

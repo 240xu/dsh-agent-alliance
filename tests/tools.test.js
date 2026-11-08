@@ -615,3 +615,22 @@ test('tool descriptions distinguish this plugin from the built-in delegation too
   // being true once the default binding was removed.
   assert.doesNotMatch(dispatch, /official subagent provider is preferred/)
 })
+
+test('parallel-safe tools declare isConcurrencySafe; mutating ones stay exclusive', async () => {
+  const { registerTools } = await import('../src/tools.js')
+  const { defaultConfig } = await import('../src/config.js')
+  const tools = []
+  registerTools(
+    { tools: { register: (def) => { tools.push(def); return () => {} } }, get: () => undefined },
+    { resolver: { resolve: () => ({}), list: () => [] }, registry: { list: () => [], get: () => ({}) }, config: defaultConfig(), home: '/tmp' },
+  )
+  // The registry defaults undeclared tools to `exclusive`, so two calls in one
+  // assistant message would run serially and our semaphore would never engage.
+  for (const name of ['agent_dispatch', 'agent_sessions', 'agent_session_read', 'agent_import_scan']) {
+    assert.equal(typeof tools.find((t) => t.name === name).isConcurrencySafe, 'function', name)
+    assert.equal(tools.find((t) => t.name === name).isConcurrencySafe({}), true)
+  }
+  for (const name of ['agent_roundtable', 'agent_import']) {
+    assert.equal(tools.find((t) => t.name === name).isConcurrencySafe, undefined, name + ' must stay exclusive')
+  }
+})

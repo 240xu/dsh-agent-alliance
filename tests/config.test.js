@@ -176,3 +176,12 @@ test('a configured subagentProvider still opts into the official backend', async
   assert.equal(config.providers.codex.subagentProvider, 'codex')
   assert.equal(config.providers.claude.subagentProvider, undefined)
 })
+
+test('unknown config keys fail loudly instead of silently doing nothing', async () => {
+  const { loadConfig } = await import('../src/config.js')
+  const file = '/tmp/alliance-no-such-file.json'
+  // A typo used to leave the effective value at its default with no error.
+  assert.throws(() => loadConfig({ defaults: { maxConcurrents: 5 } }, { file }), /known defaults key/)
+  assert.throws(() => loadConfig({ paneel: { enabled: true } }, { file }), /known config key/)
+  assert.throws(() => loadConfig({ panel: { enbled: true } }, { file }), /known panel key/)
+})

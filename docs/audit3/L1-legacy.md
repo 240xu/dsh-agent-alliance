@@ -16,7 +16,7 @@
 | # | 目标 | 判决 |
 |---|---|---|
 | L1-1 | Termux-first 路径探测 | **SURVIVES（完全未动，16 个 commit 零改动）** |
-| L1-2 | 导入管线 v4 合规 | *（待定）* |
+| L1-2 | 导入管线 v4 合规 | **PARTIALLY** — 事件流本身全部合法（40+ 对抗输入 0 失败），但 `importOne` 在"无 user 文本"会话上**报告了一个从未写入的 title** |
 | L1-3 | 旧 API 残留 | *（待定）* |
 | L1-4 | 静默 catch → "空会话" | *（待定）* |
 
@@ -175,4 +175,177 @@ export function claudeDefaultPaths() {
 
 ---
 
-<!-- APPEND: L1-2 -->
+## L1-2 — `convertToDshEvents` 对抗输入 → 真实 v4 校验器
+
+### 判决：**事件流 FIXED（完全合法）；`importOne` 的返回值 PARTIALLY SURVIVES**
+
+我用**本机真实安装的** v4 校验器（`dsh-session-format-v3-to-v4` + `dsh-llm` 的
+`expandAssistantStream`）跑了 31 个对抗输入，覆盖任务点名的每一条规则。
+
+#### 第 1 轮：16 个结构/内容输入 → 全部 OK
+
+复现命令（`/tmp/l1_v4.mjs`，用真实 `restoreReleasedV4Artifact` + 真实
+`KNOWN_SESSION_EVENT_TYPES`（从 `packages/core/session/src/known-event-types.ts` 解析，60 个类型））：
+
+```
+$ node /tmp/l1_v4.mjs
+known event types: 60
+OK     baseline simple turn
+OK     tool-call advertisement: duplicate tool names
+OK     tool with EMPTY name string
+OK     tool with arg value undefined
+OK     tool result with isError undefined
+OK     tool-only turn (no user text)
+OK     assistant text only, no user
+OK     empty turn object
+OK     null turn element
+OK     all turns empty users (title path)
+OK     user text = NUL byte
+OK     lone surrogate in text
+OK     emoji + multibyte
+OK     huge tool args (circular)
+OK     many tools in one turn (500)
+OK     long unicode title
+
+FAILURES: 0
+```
+
+#### 第 2 轮：损失 JSON / 编码往返 → 全部 OK
+
+这一轮额外加了**逐行 `assertV4RowAdmission`**（真实 per-row 准入，`codec.ts:47`）
+和**真实编码器往返**（`releasedV4SessionFormatCodec.encodeEvent`，能抓 lossless-JSON 违规）：
+
+```
+$ node /tmp/l1_v4b.mjs
+OK     tool args = BigInt (lossless JSON violation)
+OK     tool args = function
+OK     tool args = Symbol value
+OK     tool args = NaN/Infinity
+OK     tool args = Date object
+OK     tool name with newline/control chars
+OK     resultText huge (200k)
+OK     surfaceOp on tool/call? (multi-tool)
+OK     200 turns
+OK     turn with 1000 tools
+OK     id with colon (message id collision risk)
+OK     id with :u1 suffix (id collision)
+OK     createdAt = 0
+OK     createdAt negative (falls back)
+OK     turns not an array (string)
+
+checked: 15 FAILURES: 0
+```
+
+值得注意的是 `BigInt`/`function`/`Symbol`/循环引用这些**非 JSON 值**都由
+`argumentsText`（`convert.js:19-28`）的 `try/catch` 降级成 `'null'`，没有炸。
+
+#### 第 3 轮：`stream` 的 `dt` 规则 → 全部 OK
+
+任务特别点名了 `dt`。权威规则不在 v4 包里，而在
+`packages/llm/llm/src/assistant-stream.ts:510-515`：
+```js
+if (!Array.isArray(record.dt) || record.dt.some(value => !Number.isSafeInteger(value))) {
+  throw new TypeError(`${label} dt must contain safe integers`)
+}
+if (record.dt.length !== members - 1) {
+  throw new TypeError(`${label} dt length must be one less than its members`)
+}
+```
+`convert.js` 的每个 run 都是**单元素**（`texts:[x]` / `args:[x]`）配 `dt: []`，
+满足 `dt.length === members - 1`。用真实 `expandAssistantStream`（它内部调 `validateRecord`）
++ `assembleAssistantStream` 验证：
+
+```
+$ node /tmp/l1_stream3.mjs
+checked single text | assistant/message: 1 | stream records: 1
+checked single tool | assistant/message: 1 | stream records: 1
+checked tool + text (index collision risk) | assistant/message: 1 | stream records: 2
+checked many tools | assistant/message: 1 | stream records: 6
+checked tool with empty-ish name | assistant/message: 1 | stream records: 1
+checked 200 turns | assistant/message: 200 | stream records: 200
+
+stream validation failures: 0
+```
+
+⇒ **任务假设的"还能找到一个非法输入"在事件流层面不成立。** 我把
+`tool-call advertisement`、`stream dt`、`surfaceOp` 位置、`sourceEventSeqs` 四个方向
+都打过了，全部合法。这部分判 **FIXED**。
+
+---
+
+### ❌ 但 `importOne` 的返回值 PARTIALLY SURVIVES：**报告了一个从未写入的 title**
+
+这是上一轮修复（`2f6660e` 的 session/title 修复）留下的**副作用**，前一轮审计没覆盖到。
+
+#### 机制
+
+`convert.js:159-165` 在"没有 user 文本"时**完全不发** `session/title`：
+```js
+if (userMessageSeqs.length > 0) {
+  push('session/title', { title: ..., messageSeqs: userMessageSeqs, source: { kind: 'fallback' } })
+}
+```
+这是**正确的**（v4 规则：`(messageSeqs.length === 0) === (source.kind === 'user')`，
+`relationships.ts:353-354`；fallback 标题必须引用至少一条 user 消息）。
+
+**但 `persist.js` 没有跟着改**。`importOne` 的返回与台账（`persist.js:279-291`）仍然：
+```js
+return {
+  status: 'imported',
+  dshSessionId,
+  turns: exported.turns.length,
+  title: typeof exported.title === 'string' ? exported.title : null,   // ← 从不检查 title 事件是否真的写了
+}
+```
+
+#### 真实复现（走完整 `importOne`，非纯函数）
+
+```js
+// /tmp/l1_title_lie.mjs —— provider 返回有 turns 但无 user 文本（OpenCode 的
+// image-only / tool-only 首轮就能产生这种形状，见 opencode.js:144-151）
+{ title: 'Real External Title', turns: [{ assistant: 'I refactored the module.', tools: [...] }] }
+```
+
+```
+$ node /tmp/l1_title_lie.mjs
+importOne returned: {"status":"imported","dshSessionId":"561ae1b2-...","turns":1,"title":"Real External Title"}
+events written: turn/start,step/start,assistant/message,tool/call,tool/result,step/end,turn/end
+session/title present in stored log? false
+ledger title recorded as: "Real External Title"
+>>> CALLER IS TOLD title="Real External Title" BUT THE LOG HAS NO TITLE <<<
+```
+
+#### 影响
+
+1. **工具返回值说谎**：`agent_import` 的 render（`src/tools.js` 的 `imported` 分支）不显示 title，
+   但返回的 JSON 里有；面板 `/import`（`src/http.js`）原样回传 `result`。
+2. **台账永久记录了一个假事实**：`imports.json` 里 `title: "Real External Title"`，
+   而对应 DSH 会话日志里**没有任何标题事件**。任何后续读台账来展示"导入的会话标题"的
+   逻辑都会展示一个会话本身没有的标题。
+3. **不会损坏会话**——会话仍可正常打开（我验证过 v4 校验 PASS）。这是**元数据不一致**，
+   不是数据损坏。
+
+#### 为什么前一轮没抓到
+
+`docs/audit2/B1-bughunt.md:95-130` 找到的是**修复前**的"写入了非法 title 事件导致会话无法重开"，
+修复后它验证的是"事件流合法"，**没有回头验证 `importOne` 的返回值/台账与事件流是否一致**。
+`tests/importer.test.js:602` 的新测试（`'a turn stream with no user text still produces a
+readable session'`）也只断言"如果有 title 就必须自洽"，**没有断言 `importOne` 的 `title`
+字段必须为 null 当没有 title 事件时**。
+
+#### 修复（2 行）
+
+```js
+// convert.js 暴露实际写入的标题
+export function convertToDshEvents(...) { ... return { events, titleWritten } }  // 或
+// 更小改动：persist.js 里判断
+const wroteTitle = events.some(e => e.type === 'session/title')
+const effectiveTitle = wroteTitle && typeof exported.title === 'string' ? exported.title : null
+// 返回与台账统一使用 effectiveTitle
+```
+
+#### 严重度：**low–medium**（元数据撒谎，不影响可读性；但会永久污染台账）
+
+---
+
+<!-- APPEND: L1-3 -->
