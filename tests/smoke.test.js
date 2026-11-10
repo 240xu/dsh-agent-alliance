@@ -26,9 +26,15 @@ test('the package main entry is the host module this test imports', () => {
 })
 
 test('every host module imports without any @deepseek-ai package', async () => {
+  // The invariant is about IMPORT statements. Diagnostic text legitimately
+  // names official packages (e.g. asking the user to enable dsh-tool-jobs), so
+  // scanning the whole file would reject a helpful error message as a false
+  // positive. Match only module specifiers in import/export-from/dynamic import.
+  const importSpecifier = /(?:from\s*|import\s*\(|export\s+\*\s+from\s*)['"](@deepseek-ai\/[^'"]+)['"]/g
   for (const relative of ['index.js', 'src/config.js', 'src/tools.js', 'src/http.js']) {
     const source = fs.readFileSync(path.join(ROOT, relative), 'utf8')
-    assert.ok(!source.includes('@deepseek-ai/'), relative + ' must not import a DSH package')
+    const imported = [...source.matchAll(importSpecifier)].map((match) => match[1])
+    assert.deepEqual(imported, [], relative + ' must not import a DSH package')
     await import(path.join(ROOT, relative))
   }
 })

@@ -525,10 +525,27 @@ test('a capacity refusal is not silently converted into inline execution', async
     () => dispatch.execute({ provider: 'p1', prompt: 'x', background: true }, { signal: new AbortController().signal, agent: { id: 's1' } }),
     (error) => {
       assert.match(String(error.message), /limit reached/)
+      // The official tool-bash throws an actionable message naming the package
+      // that provides the missing service; mirror that guidance.
+      assert.match(String(error.message), /@deepseek-ai\/dsh-tool-jobs/)
       return true
     },
     'a capacity refusal must surface instead of degrading to inline execution',
   )
+})
+
+test('job handling never routes decisions by parsing error messages', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const root = new URL('..', import.meta.url).pathname
+  // dsh-error-handling/SKILL.md: "Never route handling by parsing messages".
+  // dsh-jobs-local throws bare Errors with no discriminating code, so a string
+  // match on its wording is both fragile and against the framework's rule.
+  for (const relative of ['src/tools.js', 'src/http.js']) {
+    const source = readFileSync(join(root, relative), 'utf8')
+    assert.doesNotMatch(source, /message\.includes\(|\.includes\(\s*['"]no job controller/,
+      relative + ' must not branch on an error message string')
+  }
 })
 
 test('the concurrency limit holds across repeated batches, not just the first', async () => {
@@ -633,4 +650,29 @@ test('parallel-safe tools declare isConcurrencySafe; mutating ones stay exclusiv
   for (const name of ['agent_roundtable', 'agent_import']) {
     assert.equal(tools.find((t) => t.name === name).isConcurrencySafe, undefined, name + ' must stay exclusive')
   }
+})
+
+test('raw tool registration validates arguments like the official defineTool', async () => {
+  const { registerTools } = await import('../src/tools.js')
+  const tools = []
+  registerTools(
+    { tools: { register: (def) => { tools.push(def); return () => {} } }, get: () => undefined },
+    { resolver: { resolve: () => ({ kind: 'cli', async dispatch() { return { text: 'ok', backend: 'cli' } } }), list: () => [] }, registry: { list: () => [], get: () => ({}) }, config: { defaults: { timeoutMs: 1000, maxConcurrent: 1 } }, home: '/tmp' },
+  )
+  const dispatch = tools.find((t) => t.name === 'agent_dispatch')
+  const exec = { signal: new AbortController().signal }
+
+  // `ctx.tools.register` validates the schema but NOT the arguments; defineTool
+  // wraps execute with validateJsonSchemaValue. Using raw register makes our
+  // `required: ['prompt']` false advertising unless we supply the same check.
+  for (const args of [{}, { prompt: 123 }, { prompt: 'x', bogus: 1 }]) {
+    await assert.rejects(
+      () => dispatch.execute(args, exec),
+      (error) => { assert.equal(error.code, 'INVALID_ARGS'); return true },
+      'malformed arguments must not reach the tool body',
+    )
+  }
+  // A valid call still dispatches (the fake backend returns a result).
+  const ok = await dispatch.execute({ prompt: 'hello' }, exec)
+  assert.equal(typeof ok, 'object')
 })

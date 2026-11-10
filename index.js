@@ -27,6 +27,34 @@ export const name = 'agent-alliance'
 export const inject = ['tools']
 
 /**
+ * Official `StandardSchemaV1` config validator.
+ *
+ * Cordis `resolveConfig` unconditionally calls `Config['~standard'].validate`
+ * before a plugin starts (`cordis/lib/index.js:956-962`), so a third-party
+ * plugin can participate in fail-at-load validation with an 8-line adapter —
+ * no Schemastery dependency and no duplicated rules. We reuse `validateLayer`
+ * through `loadConfig`'s validation path, but disable the legacy file here:
+ * the Loader validates the ROW config, and file reading stays `apply`'s job.
+ * @type {{ '~standard': { version: 1, vendor: string, validate: (value: unknown) => object } }}
+ */
+export const Config = {
+  '~standard': {
+    version: 1,
+    vendor: 'dsh-agent-alliance',
+    validate(value) {
+      try {
+        // `loadConfig` validates the layer and merges defaults; with the
+        // legacy file disabled its result is purely a function of this row.
+        const resolved = loadConfig(value, { legacyConfigFile: false, file: '/nonexistent' })
+        return { value: resolved }
+      } catch (error) {
+        return { issues: [{ message: String(error?.message || error), path: [] }] }
+      }
+    },
+  },
+}
+
+/**
  * Filesystem root for plugin state: the import ledger lives under
  * `<home>/agent-alliance/imports.json`.
  * @returns {string} absolute DSH home directory
@@ -135,7 +163,7 @@ export function apply(ctx, rowConfig = {}) {
   }
 
   const home = resolveHome()
-  const registry = buildProviders({ config })
+  const registry = buildProviders({ config, ctx })
   const resolver = createBackendResolver({ ctx, registry, config })
   const options = { ctx, io: importContext(ctx), resolver, registry, config, home }
 

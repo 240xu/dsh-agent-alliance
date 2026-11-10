@@ -5,6 +5,7 @@
 // 会话存储：~/.local/share/opencode/opencode.db（SQLite 只读；session/message/part 表）
 
 import { spawnCli as defaultSpawnCli, normalizeEnv } from '../runner.js'
+import { cliFailure, classifyCliFailure } from '../diagnostic.js'
 import { parseOpencodeEvents } from '../parse.js'
 import { defineProvider } from './types.js'
 
@@ -34,7 +35,11 @@ export function makeOpencodeProvider({ deps = {}, config = {} } = {}) {
         argv: [paths.opencodeBin, '--version'], timeoutMs: 15000, signal,
         env: { TMPDIR: prefix() + '/tmp' },
       })
-      if (r.code !== 0) return { available: false, detail: (r.stderr || r.stdout).slice(-200) }
+      if (r.code !== 0) {
+        // The official diagnostic contract forbids raw protocol payloads in
+        // model-facing detail; keep only the coarse category.
+        return { available: false, detail: 'category: ' + classifyCliFailure(r) }
+      }
       return { available: true, version: r.stdout.trim().split('\n')[0] }
     } catch (err) {
       return { available: false, detail: String(err?.message || err) }
@@ -54,7 +59,7 @@ export function makeOpencodeProvider({ deps = {}, config = {} } = {}) {
     // the CLI's own error messages, and a roundtable must not count a failed
     // member as a peer that produced an opinion.
     if (r.code !== 0) {
-      throw new Error('opencode dispatch 失败 (exit ' + r.code + '): ' + (r.stderr || r.stdout).slice(-400))
+      throw cliFailure({ provider: 'opencode', r, raw: r.stderr || r.stdout })
     }
     return { text: parsed.text, externalSessionId: parsed.sessionId, raw: r }
   }

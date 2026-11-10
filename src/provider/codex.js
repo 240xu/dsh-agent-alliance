@@ -9,6 +9,7 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { spawnCli as defaultSpawnCli } from '../runner.js'
+import { cliFailure, classifyCliFailure } from '../diagnostic.js'
 import { parseCodexOutput } from '../parse.js'
 import { defineProvider } from './types.js'
 
@@ -30,7 +31,11 @@ export function makeCodexProvider({ deps = {}, config = {} } = {}) {
   async function detect({ signal } = {}) {
     try {
       const r = await spawnCli({ argv: [process.execPath, paths.codexJs, '--version'], timeoutMs: 20000, signal })
-      if (r.code !== 0) return { available: false, detail: (r.stderr || r.stdout).slice(-200) }
+      if (r.code !== 0) {
+        // The official diagnostic contract forbids raw protocol payloads in
+        // model-facing detail; keep only the coarse category.
+        return { available: false, detail: 'category: ' + classifyCliFailure(r) }
+      }
       const m = r.stdout.match(/codex-cli\s+(\S+)/i)
       return { available: true, version: m ? m[1] : r.stdout.trim().split('\n')[0] }
     } catch (err) {
@@ -55,7 +60,7 @@ export function makeCodexProvider({ deps = {}, config = {} } = {}) {
     // "429 Too Many Requests"), and returning that as a successful answer makes
     // the roundtable count a broken member as a peer with an opinion.
     if (r.code !== 0) {
-      throw new Error('codex dispatch 失败 (exit ' + r.code + '): ' + (r.stderr || r.stdout).slice(-400))
+      throw cliFailure({ provider: 'codex', r, raw: r.stderr || r.stdout })
     }
     return { text: parsed.text, externalSessionId: parsed.sessionId, raw: r }
   }

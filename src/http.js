@@ -34,7 +34,11 @@ const MAX_BODY_BYTES = 1024 * 1024
 function rejectionFor(ctx, req) {
   let connection
   try { connection = ctx.get('connection') } catch { connection = undefined }
-  if (connection === undefined) return undefined
+  // Official `dsh-host-open-in-app` calls `connectionOf(ctx).requestRejection`
+  // unconditionally — a missing connection service throws rather than admitting
+  // the request. These routes spawn processes and spend provider quota, so a
+  // missing trust service must FAIL CLOSED, not silently expose them.
+  if (connection === undefined) return 503
   if (typeof connection.admit === 'function') {
     const admission = connection.admit({ headers: req.headers })
     if (admission === undefined) return undefined
@@ -516,18 +520,21 @@ export function registerHttp(webServer, { ctx, io, resolver, registry, config, h
           },
         })
       } catch (error) {
-        // A mounted jobs service without a controller refuses the start. Fall
-        // through to the inline path so the panel gets an answer, not a 500.
-        jobId = undefined
-        // `logger` is a Cordis built-in accessor, not a registered service, so
-        // ctx.get('logger') is undefined; only the property access works.
-        try {
-          ctx?.logger?.warn?.('agent-alliance: panel roundtable running inline: ' + String(error?.message || error))
-        } catch { /* a context without a logger must not fail the request */ }
+        // A mounted jobs service must not be silently bypassed: `start()` also
+        // rejects on the per-owner capacity cap, and converting that refusal
+        // into an inline run would defeat the admission guard. The official
+        // error-handling rule is "never route handling by parsing messages", so
+        // surface the refusal with an actionable next step instead.
+        throw failure(
+          503,
+          'background job refused: ' + String(error?.message || error)
+            + ' — enable @deepseek-ai/dsh-tool-jobs in this composition, or retry when a job slot is free',
+          'jobs-refused',
+        )
       }
-      if (jobId !== undefined) return { jobId }
+      return { jobId }
     }
-    // No usable jobs service: run inline so the panel gets an answer instead of an id.
+    // No jobs service mounted: run inline so the panel still gets an answer.
     const result = await produce(new AbortController().signal)
     return { jobId: null, text: formatRoundtableText(result) }
   }))

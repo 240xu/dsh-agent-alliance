@@ -448,3 +448,28 @@ test('a model override on the official path is reported as ignored', async () =>
   assert.deepEqual(result.ignored, ['model'])
   assert.match(String(result.note), /not applied/)
 })
+
+test('a provider diagnostic is capped at the official 4096 UTF-8 bytes', async () => {
+  const { createBackendResolver } = await import('../src/backend.js')
+  const { createRegistry, defineProvider } = await import('../src/provider/types.js')
+  const { service } = fakeSubagents({
+    names: ['codex'],
+    result: { stopReason: 'error', diagnostic: '汉'.repeat(3000) },
+  })
+  const { parent, agents } = fakeParent()
+  const resolver = createBackendResolver({
+    ctx: { subagents: service, agents },
+    registry: createRegistry([cliProvider('codex')]),
+    config: baseConfig,
+  })
+  const backend = resolver.resolve({ provider: 'codex', parent })
+  await assert.rejects(
+    () => backend.dispatch({ prompt: 'work' }),
+    (error) => {
+      const bytes = new TextEncoder().encode(String(error.diagnostic ?? error.message)).byteLength
+      assert.ok(bytes <= 4096, 'diagnostic exceeded the official 4096-byte cap')
+      assert.match(String(error.diagnostic ?? error.message), /\[diagnostic truncated\]/)
+      return true
+    },
+  )
+})

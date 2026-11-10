@@ -42,8 +42,13 @@ test('a non-zero CLI exit fails the dispatch even when the CLI printed text', as
   await assert.rejects(
     () => provider.dispatch({ prompt: 'hi', timeoutMs: 1000 }),
     (error) => {
-      assert.match(String(error.message), /exit 1/)
-      assert.match(String(error.message), /quota exceeded/)
+      assert.match(String(error.message), /exit code: 1/)
+      // The failure is classified from the raw text, but the text itself must
+      // NOT be forwarded to the model (official diagnostic contract).
+      assert.match(String(error.message), /category: limit/)
+      assert.doesNotMatch(String(error.message), /quota exceeded/)
+      assert.match(String(error.cause?.rawOutput), /quota exceeded/,
+        'raw output stays on the cause for Host logs only')
       return true
     },
   )

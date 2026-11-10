@@ -1,6 +1,8 @@
 // src/backend.js — 后端解析：官方 subagent provider 优先，CLI provider 兜底。
 // 规格：docs/SPEC-v2.md「Backend resolution (the alignment with official subagents)」。
 
+import { limitDiagnostic } from './diagnostic.js'
+
 const OFFICIAL_DETAIL = 'official subagent provider'
 
 function isObject(value) {
@@ -199,7 +201,12 @@ function annotatePoolRejection(error) {
 }
 
 function stopFailure(providerName, result) {
-  const diagnostic = isObject(result) && typeof result.diagnostic === 'string' ? result.diagnostic : ''
+  const rawDiagnostic = isObject(result) && typeof result.diagnostic === 'string' ? result.diagnostic : ''
+  // Official `SubagentResult.diagnostic` is capped at 4096 UTF-8 bytes with a
+  // visible truncation marker (dsh-subagent/src/out-of-process.ts:19,30-41).
+  // The seam normally enforces it; cap again before we forward it into our own
+  // error so a provider-authored detail cannot exceed the contract.
+  const diagnostic = rawDiagnostic === '' ? '' : limitDiagnostic(rawDiagnostic)
   const stopReason = isObject(result) ? result.stopReason : undefined
   const error = new Error(
     diagnostic !== ''

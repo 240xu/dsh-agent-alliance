@@ -47,7 +47,11 @@ export function normalizeEnv(extra) {
   for (const [name, value] of Object.entries(process.env)) {
     if (value === undefined) continue
     if (CREDENTIAL_NAME.test(name)) continue
-    if (name.startsWith('DSH_')) continue
+    // The host matches case-insensitively: Windows environment names are
+    // case-insensitive, so a lowercase `dsh_*` entry would otherwise survive
+    // and read back as `$env:DSH_*` in the child. Keep this in lockstep with
+    // `scrubbedParentEnv()` in dsh-subprocess.
+    if (name.toUpperCase().startsWith('DSH_')) continue
     merged[name] = value
   }
   // `extra` is an explicit caller decision, so it survives the scrub.

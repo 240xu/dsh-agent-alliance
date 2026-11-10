@@ -131,31 +131,20 @@ function serviceOf(ctx, service) {
 }
 
 /**
- * Report through the plugin logger when the context offers one.
+ * Start one background job through the official jobs service.
  *
- * `logger` is a Cordis built-in accessor, not a registered service, so
- * `ctx.get('logger')` is always undefined; only the property access works.
- * @param {object} ctx plugin context
- * @param {string} message diagnostic text
- * @returns {void}
- */
-function warn(ctx, message) {
-  try {
-    ctx?.logger?.warn?.(message)
-  } catch { /* a context without a logger must not break the caller */ }
-}
-
-/**
- * Start one background job through the jobs service.
- *
- * `jobs.start()` throws when the composition mounts `ctx.jobs` but no job
- * controller serves the owner: `dsh-jobs-local` requires a controller, which
- * only `dsh-tool-jobs` or an equivalent `attachController` caller provides.
- * Callers treat `undefined` as "run this inline", so a refused start must
- * degrade instead of escaping as an exception.
- * @param {object} ctx plugin context; `jobs` may be absent or unusable
+ * `ctx.jobs` is an OPTIONAL injected service (official `dsh-tool-bash` declares
+ * it through `ctx.inject(["jobs"], ...)` and registers a foreground-only tool
+ * when it is absent). We follow that split: `undefined` means the composition
+ * does not mount a jobs service, so the caller runs inline. A mounted service
+ * that REFUSES the start (capacity cap, invalid spec, no controller for the
+ * owner) is a real failure and must surface — the official error-handling rule
+ * is "never route handling by parsing messages", and `dsh-jobs-local` throws
+ * bare `Error`s with no code to match on.
+ * @param {object} ctx plugin context; `jobs` may be absent
  * @param {object} spec `{ kind, label, owner?, outputLimitBytes?, run(job) }`
- * @returns {string|undefined} the JobId string, or undefined when the job cannot start
+ * @returns {string|undefined} the JobId string, or undefined when no jobs service exists
+ * @throws {Error} a refusal from `jobs.start`, annotated with the official package name
  */
 function startJob(ctx, spec) {
   const jobs = serviceOf(ctx, 'jobs')
@@ -163,14 +152,12 @@ function startJob(ctx, spec) {
   try {
     return jobs.start(spec)
   } catch (error) {
-    const message = String(error?.message || error)
-    // Only the missing-controller refusal may degrade to inline execution. A
-    // capacity cap ("background job limit reached") or an invalid spec is a
-    // real refusal: silently running inline would spend up to the foreground
-    // budget with no job id to cancel.
-    if (!message.includes('no job controller serves')) throw error
-    warn(ctx, 'agent-alliance: no job controller in this composition; running inline instead of background')
-    return undefined
+    const annotated = new Error(
+      'background job refused: ' + String(error?.message || error)
+      + ' — enable @deepseek-ai/dsh-tool-jobs in this composition to provide a job controller',
+    )
+    annotated.cause = error
+    throw annotated
   }
 }
 
@@ -274,6 +261,60 @@ function renderDispatch(header, value) {
  * @param {string} [options.home] DSH home directory for the import ledger
  * @returns {() => void} disposer unregistering every tool this call registered
  */
+/**
+ * Validate tool arguments against the declared JSON Schema before execute.
+ *
+ * `ctx.tools.register` validates the SCHEMA at registration time but not the
+ * ARGUMENTS at call time; `defineTool` wraps `execute` with this check. We use
+ * raw `register` (as official `subagent/src/structured.ts` does), so we must
+ * supply the equivalent check ourselves, or `required: ['prompt']` would be
+ * false advertising and a malformed model call would reach the tool body.
+ * @param {object} definition tool definition with `parameters` and `execute`
+ * @returns {object} definition whose execute rejects invalid arguments
+ */
+function withArgValidation(definition) {
+  const schema = definition.parameters
+  const required = Array.isArray(schema?.required) ? schema.required : []
+  const properties = schema?.properties ?? {}
+  const execute = definition.execute
+  return {
+    ...definition,
+    async execute(args, exec) {
+      const violations = []
+      if (args === null || typeof args !== 'object' || Array.isArray(args)) {
+        violations.push('arguments must be an object')
+      } else {
+        for (const key of required) {
+          if (args[key] === undefined) violations.push('missing required field "' + key + '"')
+        }
+        if (schema?.additionalProperties === false) {
+          for (const key of Object.keys(args)) {
+            if (!Object.prototype.hasOwnProperty.call(properties, key)) {
+              violations.push('unknown field "' + key + '"')
+            }
+          }
+        }
+        for (const [key, spec] of Object.entries(properties)) {
+          const value = args[key]
+          if (value === undefined || value === null) continue
+          const type = spec?.type
+          if (type === 'string' && typeof value !== 'string') violations.push(key + ' must be a string')
+          else if (type === 'boolean' && typeof value !== 'boolean') violations.push(key + ' must be a boolean')
+          else if (type === 'number' && typeof value !== 'number') violations.push(key + ' must be a number')
+          else if (type === 'integer' && !Number.isInteger(value)) violations.push(key + ' must be an integer')
+          else if (Array.isArray(type) && !type.includes(typeof value)) violations.push(key + ' has an invalid type')
+        }
+      }
+      if (violations.length > 0) {
+        const error = new Error('invalid arguments: ' + violations.join('; '))
+        error.code = 'INVALID_ARGS'
+        throw error
+      }
+      return execute(args, exec)
+    },
+  }
+}
+
 export function registerTools(ctx, { resolver, registry, config, home, io }) {
   const defaults = config?.defaults || {}
   const defaultTimeout = Number(defaults.timeoutMs) || 300000
@@ -313,7 +354,7 @@ export function registerTools(ctx, { resolver, registry, config, home, io }) {
     })
   }
 
-  disposers.push(ctx.tools.register({
+  disposers.push(ctx.tools.register(withArgValidation({
     name: 'agent_dispatch',
     description: [
       'Dispatch one task to an EXTERNAL coding agent (its own CLI and account, outside this harness) and wait for its answer.',
@@ -411,9 +452,9 @@ export function registerTools(ctx, { resolver, registry, config, home, io }) {
       if (jobId === undefined) return dispatchForeground(backend, providerId, args, exec?.signal)
       return lossless({ kind: 'background', jobId })
     },
-  }))
+  })))
 
-  disposers.push(ctx.tools.register({
+  disposers.push(ctx.tools.register(withArgValidation({
     name: 'agent_roundtable',
     description: [
       'Run a roundtable: send the same question to several EXTERNAL agents concurrently and return their answers side by side for your own synthesis.',
@@ -514,9 +555,9 @@ export function registerTools(ctx, { resolver, registry, config, home, io }) {
       }
       return lossless({ kind: 'background', jobId })
     },
-  }))
+  })))
 
-  disposers.push(ctx.tools.register({
+  disposers.push(ctx.tools.register(withArgValidation({
     name: 'agent_sessions',
     description: [
       'List the local session history of one external agent (claude | codex | opencode | zcode), optionally filtered by text.',
@@ -548,9 +589,9 @@ export function registerTools(ctx, { resolver, registry, config, home, io }) {
       })
       return lossless({ sessions })
     },
-  }))
+  })))
 
-  disposers.push(ctx.tools.register({
+  disposers.push(ctx.tools.register(withArgValidation({
     name: 'agent_session_read',
     description: [
       'Read the transcript of one external agent session, truncated to maxChars, to recover context before continuing or importing it.',
@@ -578,9 +619,9 @@ export function registerTools(ctx, { resolver, registry, config, home, io }) {
         maxChars: Number(args.maxChars) || 8000,
       }))
     },
-  }))
+  })))
 
-  disposers.push(ctx.tools.register({
+  disposers.push(ctx.tools.register(withArgValidation({
     name: 'agent_import_scan',
     description: [
       'Scan the local session history of the supported external agents (claude | codex | opencode | zcode) and report what can be imported and what already was.',
@@ -632,9 +673,9 @@ export function registerTools(ctx, { resolver, registry, config, home, io }) {
       }
       return lossless({ total: sessions.length, sessions })
     },
-  }))
+  })))
 
-  disposers.push(ctx.tools.register({
+  disposers.push(ctx.tools.register(withArgValidation({
     name: 'agent_import',
     description: [
       'Import one external agent session as a resumable DSH session, reconstructed at the event level. Idempotent: importing twice is skipped.',
@@ -667,7 +708,7 @@ export function registerTools(ctx, { resolver, registry, config, home, io }) {
         home,
       }))
     },
-  }))
+  })))
 
   return () => {
     for (const dispose of disposers.splice(0).reverse()) dispose()

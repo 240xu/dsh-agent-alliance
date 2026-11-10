@@ -38,10 +38,22 @@ test('dispatch：resume 与 model 追加参数；cwd 透传', async () => {
   assert.equal(calls[0].cwd, '/w')
 })
 
-test('dispatch：非零退出抛错并带 stderr 尾部', async () => {
+test('dispatch：非零退出抛出官方形态的结构化诊断，不回传原始 stderr', async () => {
   const { spawnCli } = fakeRunner('', 1)
   const p = makeClaudeProvider({ deps: { spawnCli, paths: { grun: GRUN, claudeBin: BIN } } })
-  await assert.rejects(() => p.dispatch({ prompt: 'x' }), /simulated failure/)
+  await assert.rejects(
+    () => p.dispatch({ prompt: 'x' }),
+    (error) => {
+      // Official SubagentResult.diagnostic must contain no raw protocol output,
+      // env values, or credentials. Only fixed fields reach the model.
+      assert.match(String(error.message), /External CLI failure/)
+      assert.match(String(error.message), /category: /)
+      assert.doesNotMatch(String(error.message), /simulated failure/,
+        'raw CLI output must not reach the model')
+      assert.equal(error.code, 'cli-failure')
+      return true
+    },
+  )
 })
 
 test('listSessions：扫描 projects 根，取 summary 或首条 user 文本作标题', async () => {

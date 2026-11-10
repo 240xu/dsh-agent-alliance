@@ -9,6 +9,7 @@ function require_stat(p) { const s = statSync(p); if (!s.isFile()) throw new Err
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { spawnCli as defaultSpawnCli } from '../runner.js'
+import { cliFailure, classifyCliFailure } from '../diagnostic.js'
 import { parseClaudeStreamJson } from '../parse.js'
 import { defineProvider as defineProviderShim } from './types.js'
 
@@ -31,7 +32,11 @@ export function makeClaudeProvider({ deps = {}, config = {} } = {}) {
   async function detect({ signal } = {}) {
     try {
       const r = await spawnCli({ argv: [paths.grun, paths.claudeBin, '--version'], timeoutMs: 15000, signal })
-      if (r.code !== 0) return { available: false, detail: (r.stderr || r.stdout).slice(-200) }
+      if (r.code !== 0) {
+        // The official diagnostic contract forbids raw protocol payloads in
+        // model-facing detail; keep only the coarse category.
+        return { available: false, detail: 'category: ' + classifyCliFailure(r) }
+      }
       return { available: true, version: r.stdout.trim().split('\n')[0] }
     } catch (err) {
       return { available: false, detail: String(err?.message || err) }
@@ -49,7 +54,7 @@ export function makeClaudeProvider({ deps = {}, config = {} } = {}) {
     // text block, including one whose content is "API Error: 429", so a failed
     // run would otherwise resolve as a successful answer.
     if (r.code !== 0) {
-      throw new Error('claude dispatch 失败 (exit ' + r.code + '): ' + (r.stderr || r.stdout).slice(-400))
+      throw cliFailure({ provider: 'claude', r, raw: r.stderr || r.stdout })
     }
     const parsed = parseClaudeStreamJson(r.stdout)
     return { text: parsed.text, externalSessionId: parsed.sessionId, raw: r }

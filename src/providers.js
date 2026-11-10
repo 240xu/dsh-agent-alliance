@@ -6,6 +6,7 @@ import { makeClaudeProvider } from './provider/claude.js'
 import { makeCodexProvider } from './provider/codex.js'
 import { makeOpencodeProvider } from './provider/opencode.js'
 import { makeZcodeProvider } from './provider/zcode.js'
+import { seamSpawnCli } from './runner-seam.js'
 
 /**
  * Merge one provider's configured path overrides with test-injected ones.
@@ -30,10 +31,15 @@ function pathsFor(entry, injected) {
   return { ...configured, ...(injected || {}) }
 }
 
-export function buildProviders({ config, deps = {} } = {}) {
+export function buildProviders({ config, deps = {}, ctx } = {}) {
   const cfg = config || {}
   const pc = cfg.providers || {}
-  const spawnCli = deps.spawnCli
+  // Prefer the OFFICIAL `ctx.subprocess` seam when the composition mounts it:
+  // managed-range termination kills the whole process tree on cancel/timeout,
+  // and the implementation applies scrubbedParentEnv itself. A raw
+  // node:child_process spawn remains the last resort when the service is
+  // absent (or a test injects its own launcher).
+  const spawnCli = deps.spawnCli ?? (ctx !== undefined ? seamSpawnCli(ctx) : undefined)
   const paths = deps.paths || {}
   const openDb = deps.openDb || {}
 

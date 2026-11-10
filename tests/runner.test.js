@@ -108,3 +108,22 @@ test('the credential scrub matches the host SENSITIVE_ENV_PATTERN, no wider', as
     process.env = saved
   }
 })
+
+test('lowercase dsh_* ambient names are scrubbed like the official host predicate', async () => {
+  const { normalizeEnv } = await import('../src/runner.js')
+  const saved = { ...process.env }
+  try {
+    process.env.DSH_INTERNAL = 'upper'
+    process.env.dsh_lowercase_fact = 'lower'
+    process.env.MiXeD_DsH_FaCt = 'mixed' // prefix is not DSH_, keep it
+    const env = normalizeEnv()
+    // dsh-subprocess uses `key.toUpperCase().startsWith('DSH_')` because
+    // Windows environment names are case-insensitive. A case-sensitive check
+    // leaked the lowercase form into the child.
+    assert.equal(env.DSH_INTERNAL, undefined)
+    assert.equal(env.dsh_lowercase_fact, undefined, 'lowercase dsh_* must be scrubbed')
+    assert.equal(env.MiXeD_DsH_FaCt, 'mixed', 'only the DSH_ PREFIX is case-insensitive')
+  } finally {
+    process.env = saved
+  }
+})

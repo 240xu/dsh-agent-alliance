@@ -140,10 +140,36 @@ function mockResolver(providers, options = {}) {
  * @param {object} [options] overrides
  * @returns {object} options for registerHttp
  */
+/**
+ * Build a test context whose trust fence admits, layering any test-specific
+ * services (jobs, sessionPersistence) on top.
+ * @param {object} [override] optional custom ctx from a test
+ * @returns {object} ctx with both the trust fence and the custom services
+ */
+function optionsCtx(override) {
+  const customGet = override && typeof override.get === 'function' ? override.get.bind(override) : () => undefined
+  const customConnection = customGet('connection')
+  const explicitlyNoConnection = override !== undefined && Object.prototype.hasOwnProperty.call(override, 'noConnection')
+  return {
+    ...(override || {}),
+    get: (name) => {
+      // A test that supplies its own connection (rejecting, malformed, or
+      // absent-on-purpose) must win; do not overwrite its trust behavior.
+      if (name === 'connection' && customConnection === undefined && !explicitlyNoConnection) {
+        return { requestRejection: () => undefined }
+      }
+      return customGet(name)
+    },
+  }
+}
+
 function options(overrides = {}) {
   const providers = overrides.providers ?? [fakeProvider()]
   return {
-    ctx: overrides.ctx ?? { get: () => undefined },
+    // The official trust fence is mandatory. A test may override ctx to inject
+    // `jobs` or `sessionPersistence`; merge the admitting connection into that
+    // override instead of dropping the fence.
+    ctx: optionsCtx(overrides.ctx),
     resolver: overrides.resolver ?? mockResolver(providers),
     registry: overrides.registry ?? createRegistry(providers),
     config: overrides.config ?? { defaults: { timeoutMs: 5000 }, panel: { enabled: true } },
@@ -326,12 +352,13 @@ test('a connection service with neither admission method answers 503', async () 
   assert.equal(response.status, 503)
 })
 
-test('no connection service admits the request', async () => {
+test('a missing connection service fails closed instead of admitting', async () => {
   const { webServer, routes } = mockWebServer()
-  registerHttp(webServer, options({ ctx: { get: () => undefined } }))
+  registerHttp(webServer, options({ ctx: { noConnection: true, get: () => undefined } }))
   const response = await request(routes, 'GET', ROUTE_PREFIX + '/state')
-  assert.equal(response.status, 200)
-  assert.equal(response.json.ok, true)
+  // Official open-in-app treats the trust service as mandatory. These routes
+  // spawn processes and spend quota, so a missing fence must not fail open.
+  assert.equal(response.status, 503)
 })
 
 test('every route answers with the { ok } envelope on success', async () => {

@@ -6,6 +6,7 @@
 // （session 表 id/directory/title?、message/part 表、compaction part 类型）。
 
 import { spawnCli as defaultSpawnCli } from '../runner.js'
+import { cliFailure, classifyCliFailure } from '../diagnostic.js'
 import { defineProvider } from './types.js'
 
 function home() {
@@ -61,7 +62,7 @@ export function makeZcodeProvider({ deps = {}, config = {}, openDb } = {}) {
     const text = String(r.stdout || '').trim()
     // A non-zero exit is a failed run even when the command printed something.
     if (r.code !== 0) {
-      throw new Error('zcode dispatch 失败 (exit ' + r.code + '): ' + (r.stderr || r.stdout).slice(-400))
+      throw cliFailure({ provider: 'zcode', r, raw: r.stderr || r.stdout })
     }
     return { text, externalSessionId: undefined, raw: r }
   }

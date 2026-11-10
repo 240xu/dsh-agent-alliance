@@ -185,3 +185,21 @@ test('unknown config keys fail loudly instead of silently doing nothing', async 
   assert.throws(() => loadConfig({ paneel: { enabled: true } }, { file }), /known config key/)
   assert.throws(() => loadConfig({ panel: { enbled: true } }, { file }), /known panel key/)
 })
+
+test('the exported Config is a valid official StandardSchemaV1 validator', async () => {
+  const { Config } = await import('../index.js')
+  // Cordis resolveConfig calls `Config['~standard'].validate(config)` and
+  // throws a ValidationError when the result has `issues`. A zero-dependency
+  // bundle can still participate in fail-at-load validation.
+  assert.equal(Config['~standard'].version, 1)
+  assert.equal(typeof Config['~standard'].validate, 'function')
+
+  const bad = Config['~standard'].validate({ defaults: { maxConcurrents: 5 } })
+  assert.ok(Array.isArray(bad.issues) && bad.issues.length > 0, 'a typo must fail at load')
+
+  const good = Config['~standard'].validate({ providers: { claude: { enabled: true } } })
+  assert.ok(good.value && !('issues' in good), 'a valid row must resolve')
+  assert.equal(good.value.providers.claude.enabled, true)
+  // The Loader validates the row only; legacy file reading stays in apply().
+  assert.equal(good.value.providers.zcode.enabled, false)
+})
