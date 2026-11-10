@@ -1,7 +1,7 @@
 {
   "name": "dsh-agent-alliance",
   "version": "0.2.0",
-  "description": "Run DSH alongside the official Codex and Claude Code subagent backends plus OpenCode and ZCode CLIs: dispatch tasks, hold roundtables, browse external sessions, and import their histories into DSH.",
+  "description": "External-agent extension for DeepSeek Harness: dispatch to Claude Code / Codex / OpenCode / ZCode CLIs, hold roundtables, browse their histories and import them as resumable DSH sessions. Delegation inside DSH is owned by the official subagent / subagent_fork tools.",
   "type": "module",
   "license": "MIT",
   "keywords": [
