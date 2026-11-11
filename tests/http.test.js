@@ -705,3 +705,23 @@ test('GET /state hides providers disabled in config without removing them from r
   const ids = response.json.providers.map((p) => p.id)
   assert.deepEqual(ids, ['p1'], 'a disabled provider must not be offered in the panel')
 })
+
+test('a foreground panel roundtable never touches the jobs service', async () => {
+  const { webServer, routes } = mockWebServer()
+  const jobs = { start() { throw new Error('must not be called for a foreground roundtable') } }
+  registerHttp(webServer, options({
+    ctx: { get: (name) => (name === 'jobs' ? jobs : name === 'connection' ? { requestRejection: () => undefined } : undefined) },
+    resolver: {
+      resolve: () => ({ id: 'p1', kind: 'cli', available: true, async dispatch() { return { text: 'answer', backend: 'cli' } } }),
+      list: () => [{ id: 'p1', label: 'P1', kind: 'cli', available: true }],
+    },
+    config: { defaults: { timeoutMs: 1000 }, panel: { enabled: true } },
+  }))
+  const response = await request(routes, 'POST', ROUTE_PREFIX + '/roundtable', {
+    prompt: 'compare', providers: ['p1'], rounds: 1, background: false,
+  })
+  // Since jobs.start refusals are surfaced, ignoring background:false would
+  // turn this foreground call into a 503 wherever no controller is mounted.
+  assert.equal(response.status, 200)
+  assert.equal(response.json.jobId, null, 'the foreground path reports no job id')
+})

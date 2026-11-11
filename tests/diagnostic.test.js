@@ -47,3 +47,18 @@ test('limitDiagnostic truncates on a UTF-8 boundary with a visible marker', () =
   assert.doesNotMatch(limited, /\uFFFD/)
   assert.equal(limitDiagnostic('short'), 'short')
 })
+
+test('a missing CLI is classified product-error, not service (real dispatch regression)', () => {
+  // On a real web-profile dispatch, codex's node stack frame contained
+  // `loader:1568`; a loose /5\d\d/ rule read it as HTTP 503 and reported
+  // `category: service` for "Cannot find module". Classify installation
+  // failures first and require HTTP wording for 5xx.
+  assert.equal(classifyCliFailure({ code: -1, stderr: 'spawn /missing/bin ENOENT' }), 'product-error')
+  assert.equal(
+    classifyCliFailure({ code: 1, stderr: 'Cannot find module \'/nonexistent/codex.js\'\n    at loader:1568' }),
+    'product-error',
+  )
+  // A genuine 5xx still classifies as service.
+  assert.equal(classifyCliFailure({ code: 1, stderr: 'HTTP 503 service unavailable' }), 'service')
+  assert.equal(classifyCliFailure({ code: 1, stderr: 'bare line 1568 only' }), 'unknown')
+})

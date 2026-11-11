@@ -51,11 +51,19 @@ export function classifyCliFailure(r) {
   if (r.timedOut === true) return 'limit'
   const text = String(r.stderr || r.stdout || '')
   // 只做粗分类的关键词匹配，结果仅作为分类标签，绝不把原文带给模型。
+  // A missing executable / missing module is a product-installation failure,
+  // not an upstream service outage. Check it FIRST: node's own stack frames
+  // contain bare line numbers such as `:1568` that a loose `/5\d\d/` rule
+  // would misread as an HTTP 503 (reproduced on a real dispatch).
+  if (/ENOENT|Cannot find module|command not found|not found in PATH|no such file or directory/i.test(text)) {
+    return 'product-error'
+  }
   if (/quota|rate.?limit|429|too many requests|insufficient|billing|credit/i.test(text)) return 'limit'
-  if (/unauthoriz|forbidden|401|403|api key|credential|permission denied|eacces/i.test(text)) return 'access-policy'
+  if (/unauthoriz|forbidden|\b401\b|\b403\b|api key|credential|permission denied|eacces/i.test(text)) return 'access-policy'
   if (/econn|enotfound|etimedout|socket|network|dns/i.test(text)) return 'transport'
   if (/invalid|parse|malformed|schema/i.test(text)) return 'invalid-result'
-  if (/5\d\d|service unavailable|overload/i.test(text)) return 'service'
+  // Require HTTP wording: bare 3-digit numbers in stack frames are NOT statuses.
+  if (/HTTP\s*5\d\d|\b5\d\d\b\s*(service unavailable|error)|service unavailable|overload/i.test(text)) return 'service'
   return 'unknown'
 }
 

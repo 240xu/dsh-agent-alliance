@@ -495,7 +495,12 @@ export function registerHttp(webServer, { ctx, io, resolver, registry, config, h
       signal,
     })
     const label = 'roundtable: ' + (prompt.replace(/\s+/g, ' ').trim().slice(0, 60) || 'panel')
-    const jobs = jobsOf(ctx)
+    // The panel may explicitly ask for a foreground answer. Honour it: since
+    // jobs.start() refusals are now surfaced instead of swallowed, an ignored
+    // `background:false` would make a foreground roundtable fail with 503 in
+    // any composition without a job controller.
+    const background = body.value.background !== false
+    const jobs = background ? jobsOf(ctx) : null
     if (jobs !== null && typeof jobs.start === 'function') {
       const controller = new AbortController()
       let jobId
