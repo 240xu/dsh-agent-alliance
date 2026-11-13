@@ -29,12 +29,14 @@ export const inject = ['tools']
 /**
  * Official `StandardSchemaV1` config validator.
  *
- * Cordis `resolveConfig` unconditionally calls `Config['~standard'].validate`
- * before a plugin starts (`cordis/lib/index.js:956-962`), so a third-party
- * plugin can participate in fail-at-load validation with an 8-line adapter —
- * no Schemastery dependency and no duplicated rules. We reuse `validateLayer`
- * through `loadConfig`'s validation path, but disable the legacy file here:
- * the Loader validates the ROW config, and file reading stays `apply`'s job.
+ * Cordis `resolveConfig` calls `Config['~standard'].validate` before a plugin
+ * starts (`cordis/lib/index.js:956-962`) and REPLACES the row config with the
+ * validated `value`. This validator must therefore validate only and return the
+ * input untouched: returning `loadConfig`'s resolved result would hand `apply`
+ * a fully defaulted object, which its second `loadConfig(rowConfig)` call would
+ * then merge OVER the legacy file — silently discarding user settings such as
+ * `providers.zcode.enabled`. The Loader validates the ROW; `loadConfig` in
+ * `apply` owns file reading and default merging.
  * @type {{ '~standard': { version: 1, vendor: string, validate: (value: unknown) => object } }}
  */
 export const Config = {
@@ -43,10 +45,9 @@ export const Config = {
     vendor: 'dsh-agent-alliance',
     validate(value) {
       try {
-        // `loadConfig` validates the layer and merges defaults; with the
-        // legacy file disabled its result is purely a function of this row.
-        const resolved = loadConfig(value, { legacyConfigFile: false, file: '/nonexistent' })
-        return { value: resolved }
+        // Validate this layer alone. Do not resolve config here.
+        loadConfig(value, { legacyConfigFile: false, file: '/nonexistent' })
+        return { value }
       } catch (error) {
         return { issues: [{ message: String(error?.message || error), path: [] }] }
       }

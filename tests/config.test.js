@@ -197,9 +197,13 @@ test('the exported Config is a valid official StandardSchemaV1 validator', async
   const bad = Config['~standard'].validate({ defaults: { maxConcurrents: 5 } })
   assert.ok(Array.isArray(bad.issues) && bad.issues.length > 0, 'a typo must fail at load')
 
-  const good = Config['~standard'].validate({ providers: { claude: { enabled: true } } })
+  const row = { providers: { claude: { enabled: true } } }
+  const good = Config['~standard'].validate(row)
   assert.ok(good.value && !('issues' in good), 'a valid row must resolve')
-  assert.equal(good.value.providers.claude.enabled, true)
-  // The Loader validates the row only; legacy file reading stays in apply().
-  assert.equal(good.value.providers.zcode.enabled, false)
+  // resolveConfig REPLACES the row config with this value. Returning a fully
+  // resolved config here would make apply's second loadConfig() merge defaults
+  // over the legacy file and silently discard user settings (reproduced on the
+  // live Host: providers.zcode.enabled from the legacy file was ignored).
+  assert.deepEqual(good.value, row, 'validate must return the row untouched')
+  assert.equal('defaults' in good.value, false, 'must not inject defaults into the row')
 })
