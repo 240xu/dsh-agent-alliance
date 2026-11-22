@@ -47,20 +47,43 @@ export async function runRoundtable({ registry, prompt, providerIds, cwd, model,
       const t0 = Date.now()
       try {
         const provider = registry.get(id) // 未知 id 会 throw → 记为该家失败
+        const promptSent = buildDebatePrompt(prompt, rn, history, id)
         const out = await provider.dispatch({
-          prompt: buildDebatePrompt(prompt, rn, history, id), cwd, model, timeoutMs, signal,
+          prompt: promptSent, cwd, model, timeoutMs, signal,
         })
         return {
           provider: id, ok: true, text: out.text,
           externalSessionId: out.externalSessionId ?? null,
           durationMs: Date.now() - t0,
+          // The exact prompt this member received, so the prefix invariant is
+          // checkable from the result instead of trusted from the code.
+          promptSent,
+          ...(out.usage === undefined ? {} : { usage: out.usage }),
         }
       } catch (err) {
         return { provider: id, ok: false, error: String(err?.message || err), durationMs: Date.now() - t0 }
       }
     })
     const entries = await Promise.all(tasks)
-    debate.push({ round: rn, entries })
+    // Report the cache-relevant facts instead of asserting them in prose. A
+    // strict prefix is what lets a provider's prompt cache reuse the already
+    // processed region; the character count is how much of it is shared.
+    const base = String(prompt)
+    const shared = entries.map((entry) => {
+      const sent = typeof entry.promptSent === 'string' ? entry.promptSent : ''
+      const strictPrefix = rn === 1 ? sent === base : sent.startsWith(base)
+      let common = 0
+      const min = Math.min(sent.length, base.length)
+      while (common < min && sent.charCodeAt(common) === base.charCodeAt(common)) common += 1
+      return { provider: entry.provider, strictPrefix, sharedPrefixChars: common }
+    })
+    debate.push({
+      round: rn,
+      entries,
+      basePromptChars: base.length,
+      prefixes: shared,
+      strictPrefix: shared.every((item) => item.strictPrefix),
+    })
     for (const e of entries) {
       if (!e.ok) continue
       const prev = history.findIndex(h => h.provider === e.provider)

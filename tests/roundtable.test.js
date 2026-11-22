@@ -130,3 +130,30 @@ test('round 2 keeps the question as a strict prefix and withholds the member own
     assert.ok(prompt.includes(other + '-answer'), 'the other member answer must be present')
   }
 })
+
+test('every round reports whether its prompt strictly extends the question', async () => {
+  const { runRoundtable } = await import('../src/roundtable.js')
+  const sent = []
+  const provider = (id) => ({
+    id,
+    async dispatch({ prompt }) { sent.push({ id, prompt }); return { text: 'answer from ' + id } },
+  })
+  const registry = { list: () => [{ id: 'a' }, { id: 'b' }], get: (id) => provider(id) }
+  const result = await runRoundtable({ registry, prompt: 'Q', rounds: 3 })
+
+  for (const round of result.debate) {
+    // The invariant that makes prompt-cache reuse possible: round 2 onward must
+    // begin with the untouched question, not a rewritten header.
+    assert.equal(round.strictPrefix, true, `round ${round.round} broke the strict prefix`)
+    assert.equal(round.basePromptChars, 1)
+    for (const prefix of round.prefixes) {
+      assert.equal(prefix.strictPrefix, true)
+      // Round 1 sends the bare question, so the shared region is all of it.
+      if (round.round === 1) assert.equal(prefix.sharedPrefixChars, 1)
+    }
+  }
+  // Round 2 must actually start with 'Q' — verified from the prompt we sent,
+  // not from the builder's source.
+  const round2 = sent.filter((entry) => entry.prompt.startsWith('Q') && entry.prompt !== 'Q')
+  assert.ok(round2.length > 0, 'round 2 prompts must extend the question')
+})

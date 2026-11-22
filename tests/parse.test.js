@@ -37,3 +37,55 @@ test('三个解析器对空输入不炸', () => {
   assert.deepEqual(parseOpencodeEvents(''), { text: '', sessionId: undefined })
   assert.deepEqual(parseCodexOutput(''), { text: '', sessionId: undefined })
 })
+
+test('parseClaudeStreamJson maps usage onto DSH disjoint fields without arithmetic', async () => {
+  const { parseClaudeStreamJson } = await import('../src/parse.js')
+  const lines = [
+    JSON.stringify({ type: 'system', session_id: 's-1' }),
+    JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'partial' }] } }),
+    JSON.stringify({
+      type: 'result',
+      result: 'final answer',
+      session_id: 's-1',
+      usage: {
+        input_tokens: 1200,
+        output_tokens: 340,
+        cache_read_input_tokens: 900,
+        cache_creation_input_tokens: 250,
+      },
+    }),
+  ].join('\n')
+  const parsed = parseClaudeStreamJson(lines)
+
+  assert.equal(parsed.text, 'final answer')
+  assert.equal(parsed.sessionId, 's-1')
+  // Anthropic already separates uncached from cached input, which IS DSH's
+  // disjoint convention — so 1200 stays 1200. Subtracting the cache counters
+  // here (a tempting "align to disjoint" move) would double-count, because the
+  // official adapter (claude-code-mods/src/index.ts:148-151) adds them without
+  // arithmetic. This test pins that fact.
+  assert.deepEqual(parsed.usage, {
+    inputTokens: 1200,
+    outputTokens: 340,
+    cacheReadTokens: 900,
+    cacheWriteTokens: 250,
+  })
+})
+
+test('a CLI that reports no cache counters yields no cache fields', async () => {
+  const { parseClaudeStreamJson } = await import('../src/parse.js')
+  const parsed = parseClaudeStreamJson(JSON.stringify({
+    type: 'result', result: 'ok', session_id: 's-2', usage: { input_tokens: 10, output_tokens: 2 },
+  }))
+  // Absent must stay absent: a provider that never caches must not look like it
+  // reported a cache miss of 0.
+  assert.deepEqual(parsed.usage, { inputTokens: 10, outputTokens: 2 })
+  assert.equal('cacheReadTokens' in parsed.usage, false)
+  assert.equal('cacheWriteTokens' in parsed.usage, false)
+})
+
+test('a run with no usage line carries no usage field at all', async () => {
+  const { parseClaudeStreamJson } = await import('../src/parse.js')
+  const parsed = parseClaudeStreamJson(JSON.stringify({ type: 'result', result: 'ok', session_id: 's-3' }))
+  assert.equal('usage' in parsed, false, 'no usage must mean no field, not usage: undefined')
+})

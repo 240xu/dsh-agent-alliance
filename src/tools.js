@@ -326,6 +326,9 @@ export function registerTools(ctx, { resolver, registry, config, home, io }) {
       ...(Array.isArray(result?.ignored) && result.ignored.length > 0
         ? { ignored: result.ignored, note: result.note ?? null }
         : {}),
+      // Token accounting in DSH's own vocabulary, present only when the backend
+      // reported it. Absence means "not reported", never "zero".
+      ...(result?.usage === undefined ? {} : { usage: result.usage }),
     })
   }
 

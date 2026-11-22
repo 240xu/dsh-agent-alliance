@@ -57,7 +57,12 @@ export function makeClaudeProvider({ deps = {}, config = {} } = {}) {
       throw cliFailure({ provider: 'claude', r, raw: r.stderr || r.stdout })
     }
     const parsed = parseClaudeStreamJson(r.stdout)
-    return { text: parsed.text, externalSessionId: parsed.sessionId, raw: r }
+    return {
+      text: parsed.text,
+      externalSessionId: parsed.sessionId,
+      raw: r,
+      ...(parsed.usage === undefined ? {} : { usage: parsed.usage }),
+    }
   }
 
   // --- 会话浏览 ------------------------------------------------------------
