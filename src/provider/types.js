@@ -1,5 +1,5 @@
 // src/provider/types.js — Provider 统一接口与注册表。
-// Provider 契约见 docs/SPEC.md：detect/dispatch/listSessions/readSession。
+// Provider 契约见 docs/SPEC-v2.md：detect/dispatch/listSessions/readSession。
 
 export function defineProvider(spec) {
   if (!spec || typeof spec.id !== 'string' || !spec.id) {

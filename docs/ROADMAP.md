@@ -1,7 +1,7 @@
 # ROADMAP — dsh-agent-alliance
 
 > 2026-11-06 重写为对齐 DSH 0.2.1-rc.2 的版本。上一版（0.1.0，2026-08-22）的目标与现状已归档在
-> `docs/VERIFICATION-P1.md` 的历史小节里，不再作为当前计划依据。
+> `docs/archive/VERIFICATION-P1-0.1.0.md` 的历史小节里，不再作为当前计划依据。
 
 ## 现状（0.2.0）
 
@@ -14,7 +14,7 @@
 ## P0（立即）
 
 1. **真实宿主回归**：重启后确认 6 工具可见、侧边栏入口出现、五标签面板可读数据。
-   清单见 `docs/VERIFICATION-P1.md` 的「0.2.0 回归」小节。
+   清单见 `docs/archive/VERIFICATION-P1-0.1.0.md` 的「0.2.0 回归」小节。
 2. **官方后端实测**：装上两个官方包后，用 `agent_dispatch` 发一条最小任务（需用户同意额度），
    确认结果里 `backend: "subagent"`，并在 `list_agents` 里看到子代理会话。
 3. **告警可见性**：`ctx.logger` 的 warn/error 是否在面板「状态」标签暴露；目前只能看宿主日志。
@@ -41,4 +41,4 @@
   现已在 `config.providers.<id>.paths` 提供**可用的显式覆盖**（第三轮审计发现原先的覆盖入口
   `deps.paths` 在生产路径从未被传入，只有测试能用）。仍可进一步改成「按命令名探测 PATH 优先」的对称形式。
 - 面板没有单元测试，只有 `manifest-guard` 的结构守卫；渲染逻辑靠人工点验。
-- `docs/VERIFICATION-P1.md` 保留了大量 0.1.0 时代的验证记录，只作历史参考，其中的契约描述已过期。
+- `docs/archive/VERIFICATION-P1-0.1.0.md` 保留了大量 0.1.0 时代的验证记录，只作历史参考，其中的契约描述已过期。
