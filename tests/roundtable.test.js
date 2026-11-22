@@ -168,22 +168,37 @@ test('the round marker sits after the peer block so round N+1 reuses it', async 
       return { text: 'answer for this round ' + 'x'.repeat(1200) }
     },
   }
-  const registry = { list: () => [{ id: 'a' }], get: () => provider }
+  // TWO members: `buildDebatePrompt` excludes a member's own answer, so a
+  // single provider yields an empty peer block and this test would compare the
+  // question against itself — passing without exercising the layout at all.
+  const registry = { list: () => [{ id: 'a' }, { id: 'b' }], get: (id) => ({ ...provider, id }) }
   await runRoundtable({ registry, prompt: 'Q'.repeat(400), rounds: 3 })
 
   // Round 2 and round 3 differ only in the trailing round marker and the
   // (changed) peer answer. The round marker must NOT precede the peer block:
   // putting it first diverges ~400 chars in and re-bills the whole block.
-  const [r1, r2, r3] = sent
+  const [r1] = sent
+  const r2 = sent.find((p, i) => i > 0 && p.startsWith('Q'.repeat(400) + '\n\n---'))
+  const r3s = sent.filter((p, i) => i > 0 && p.startsWith('Q'.repeat(400) + '\n\n---'))
+  const r3 = r3s[r3s.length - 1]
+  assert.ok(r2 !== undefined && r3 !== undefined, 'later rounds must carry a peer block')
   const commonR2R3 = (() => {
     let i = 0
     while (i < Math.min(r2.length, r3.length) && r2[i] === r3[i]) i += 1
     return i
   })()
-  // The peer block is the bulk of the prompt; reuse must cover most of it even
-  // though the answers changed between rounds.
-  assert.ok(commonR2R3 > r2.length * 0.2,
-    `round 3 reused only ${commonR2R3}/${r2.length} chars of round 2`)
+  // The round marker must not appear before the peer block: if it did, r2 and
+  // r3 would diverge at ~400 chars (the question) instead of inside the peer
+  // answers, and the whole peer block would be re-billed.
+  // Locate the peer answer text and the round marker; the answer must come
+  // first. Comparing marker position against the question length alone would
+  // still pass when the marker sits just after `---`, which is exactly the bug.
+  const markerAtR2 = r2.indexOf('【第2轮辩论】')
+  const peerTextAtR2 = r2.indexOf('answer for this round')
+  assert.ok(peerTextAtR2 > 0, 'round 2 must contain a peer answer')
+  assert.ok(peerTextAtR2 < markerAtR2,
+    'the peer answer must precede the round marker, or every round re-bills the peer block')
+  assert.ok(commonR2R3 > 400, `round 3 reused only ${commonR2R3} chars of round 2`)
   // Both rounds still start with the untouched question.
   assert.ok(r2.startsWith('Q'.repeat(400)) && r3.startsWith('Q'.repeat(400)))
   assert.ok(r1 === 'Q'.repeat(400), 'round 1 is the bare question')
