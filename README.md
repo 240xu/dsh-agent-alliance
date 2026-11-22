@@ -186,23 +186,44 @@ DeepSeek Harness **扩展插件**：把 **Claude Code / Codex / OpenCode / ZCode
 声明不出任何父进程能力）、`inheritsParentContext` 为 false。
 **判据是那个 CLI 是否讲 ACP 协议**，不是它的牌子。
 
-**实测结论（2026-11-22）**：
+**实测结论（2026-11-23）**：
 
 | agent | 支持 ACP？ | 证据 |
 |---|---|---|
-| **opencode 1.19.6** | **是** | `opencode acp` 是 stdio JSON-RPC 服务；实测 `initialize` → `session/new` → `session/prompt` 完整往返，收到流式回答与 `stopReason: end_turn` |
+| **opencode v1 `1.19.6`** | **是** | `opencode acp` 是 stdio JSON-RPC 服务；`initialize` → `session/new` → `session/prompt` 完整往返，流式 `PONG` + `end_turn`，12.4s |
+| **opencode v2 `2.3.2`** | **是** | 同上往返，5.4s；`protocolVersion` 仍为 1，但能力声明不同（见下） |
 | zcode | **无法验证** | npm 上的 `zcode@0.0.1` 是无 bin 的空壳包（`description: "This is a nice project"`），非官方产物 |
 
-所以 opencode 可以走上面的官方通道：
+> ⚠️ **v1 与 v2 是两套架构，不能用一版的结论代表另一版**：
+> v2 不在 `opencode-ai` 这个包名下发布（那条线**只有 0.x/1.x**），而是 `@opencode/*` 拆包系列
+> （`core` 有 38 个依赖，二进制以 4 个平台变体分发，**必须跑 postinstall**）。
+> 两者的 ACP 能力差异：v2 **去掉** `mcpCapabilities.sse`，**新增**
+> `sessionCapabilities.additionalDirectories` / `delete` 与 `_meta.steering`；
+> v2 的 `acp` 子命令**没有** `--cwd`/`--port`（v1 有）。逐项对照见
+> [docs/audit5/C4-acp-feasibility.md](docs/audit5/C4-acp-feasibility.md)。
+
+所以 opencode 可以走上面的官方通道（两版只是 `command` 不同）：
 
 ```yaml
+# v1
 - id: subagent-acp
   name: '@deepseek-ai/dsh-subagent-acp'
   config:
     providerName: 'opencode'
-    command: '/absolute/path/to/opencode-ai/bin/opencode.exe'
+    command: '/path/to/opencode-ai/bin/opencode.exe'
+    args: ['acp']
+
+# v2
+- id: subagent-acp
+  name: '@deepseek-ai/dsh-subagent-acp'
+  config:
+    providerName: 'opencode2'
+    command: '/path/to/@opencode/cli-linux-x64/bin/opencode'
     args: ['acp']
 ```
+
+**这两个配置都需要进程环境里有可用代理**，否则 `session/prompt` 会超时——
+实测同一个二进制换代理就从不返回变成 5–12 秒返回，所以这不是可选项。
 
 **但两条路是并存而非二选一**，因为官方 ACP provider 的能力边界是：
 `agentOptions:false`（不能指定 model）、`outputSchema:false`、`inheritsParentContext:false`

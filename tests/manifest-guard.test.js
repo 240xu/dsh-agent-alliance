@@ -172,3 +172,21 @@ test('icon is a small original SVG mark', () => {
   assert.ok(source.startsWith('<svg'), 'icon.svg must start with <svg')
   assert.ok(source.length < 4096, 'icon.svg must stay small')
 })
+
+test('the ACP documentation names both opencode architectures separately', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const root = new URL('..', import.meta.url).pathname
+  const readme = readFileSync(join(root, 'README.md'), 'utf8')
+
+  // opencode ships two architectures on different package lines (opencode-ai is
+  // 0.x/1.x only; @opencode/* is the 2.x line). A single unqualified "opencode
+  // supports ACP" claim let a reader assume v1's capability set applies to v2,
+  // which it does not. The docs must name both.
+  assert.match(readme, /opencode v1/, 'the docs must name the v1 architecture')
+  assert.match(readme, /opencode v2/, 'the docs must name the v2 architecture')
+  assert.match(readme, /两套架构/, 'the docs must say the two are separate architectures')
+  // And the differences that matter must be stated, not just "both work".
+  assert.match(readme, /mcpCapabilities\.sse/, 'the sse capability difference must be stated')
+  assert.match(readme, /additionalDirectories/, 'the added session capability must be stated')
+})

@@ -1,157 +1,135 @@
-# C4：opencode / zcode 的 ACP 可行性 — 实测结论
+# C4：opencode 的 ACP 支持 — v1 与 v2 双架构实测
 
-> 实测时间：2026-11-22
-> 结论一句话：**opencode 1.19.6 原生支持 ACP，且已完成真实握手与会话往返。**
+> 实测时间：2026-11-23
+> **核心结论：v1 与 v2 都支持 ACP，但能力声明不同，不能互相代表。**
 
-## 一、网络问题的真实原因（先说清楚，这决定了怎么装）
+## 一、先分清两套架构（这是最容易搞错的地方）
 
-`dsh` 用户的 egress 被 iptables `DSH_EGRESS` 限制。我实测：
+`npm view opencode-ai versions` 给出 **12268 个版本，major 只有 0 和 1，没有任何 2.x**。
+v2 根本不在 `opencode-ai` 这个包名下发布 —— **它是另一条产品线**。
 
-| 目标 | 结果 |
-|---|---|
-| `172.30.66.1:1091` / `:1081` TCP | `nc` **成功** |
-| 同两个端口发 HTTPS | **全部超时** |
-| `dsh` 直连 `registry.npmjs.org` | **超时** |
-| `ova` 直连 `registry.npmjs.org` | **200 / 7.6s** |
+| 项 | **v1** `opencode-ai` | **v2** `@opencode/*` |
+|---|---|---|
+| 安装包 | `opencode-ai@1.19.6`（单包，**0 依赖**，`unpackedSize` 7852） | `@opencode/cli@2.3.2`（`core` 拆包有 **38 个依赖**：zod/effect/undici/bun-pty/jose…） |
+| 二进制位置 | 直接内置：`bin/opencode.exe`（**215 MB ELF**） | `bin/opencode.exe` 只是 **275 字节启动脚本**；真二进制在 `@opencode/cli-linux-x64/bin/opencode`（**252 MB**），另有 `baseline` / `musl` / `baseline-musl` 四个变体 |
+| `bin` 名 | `opencode` | **`opencode` 和 `opencode2` 两个名字指向同一个 exe** |
+| postinstall | 不需要（二进制随包发） | **必须跑**。跳过会留一个只打印「postinstall script was not run」的占位脚本 |
+| `--version` | `1.19.6` | **`opencode v2.3.2`**（前缀不同，脚本解析要注意） |
 
-⇒ **代理端口通但代理本身不工作**。AGENTS.md §5 说"环境变量已预设、最稳"，但在当前
-egress 链下实测不可用。可行路径只有一条：**通过 `ova` 用户装，再让 `dsh` 执行装好的产物**。
+**安装踩的坑**：v2 的 252 MB 二进制经代理下载极易中断。第一次 600s 超时只拿到 40 MB，
+第二次直接 truncated（跑起来报 `Part of its embedded program is missing`）。
+最终用 `fetch_retries=5` + 50 分钟超时才完整（校验：文件大小 === npm `unpackedSize` 252848539）。
 
-```bash
-SSHPASS=Xu090316 sshpass -e ssh -o StrictHostKeyChecking=no ova@127.0.0.1 '<cmd>'
-```
+## 二、ACP 实测（两边都是真实 stdio 握手）
 
-`ova` 的 node 是 v20.18.1 / npm 10.8.2（不是 node24）。`opencode.exe` 装好后
-权限是 `-rwxr-xr-x ova ova`，**dsh 可以直接执行**（已验证 `--version` → `1.19.6`）。
-
-## 二、opencode 的 ACP 支持 — 已证实
-
-### 证据 1：`--help` 里有 acp 子命令
-
-```
-Commands:
-  opencode acp                 start ACP (Agent Client Protocol) server
-  ...
-```
-
-### 证据 2：`opencode acp` 是 **stdio** 服务，符合官方 seam 的 spawn 方式
-
-官方 `subagent-acp/src/run.ts:351` 用：
-```ts
-stdio: { stdin: 'pipe', stdout: 'pipe', stderr: 'inherit' }
-```
-`opencode acp` 正是 stdio JSON-RPC 服务（无 `--port` 需求，`--port` 是 MCP server 用的）。
-
-### 证据 3：真实 `initialize` 握手成功
-
-发一个 JSON-RPC `initialize` 帧，收到：
+### v1 @ 1.19.6
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{
-  "protocolVersion":1,
-  "agentCapabilities":{"loadSession":true,"mcpCapabilities":{"http":true,"sse":true},
+initialize → {"protocolVersion":1,
+  "agentCapabilities":{
+    "loadSession":true,
+    "mcpCapabilities":{"http":true,"sse":true},
     "promptCapabilities":{"embeddedContext":true,"image":true},
     "sessionCapabilities":{"close":{},"fork":{},"list":{},"resume":{}}},
-  "authMethods":[{"description":"Run `opencode auth login` in the terminal",
-    "name":"Login with opencode","id":"opencode-login"}],
-  "agentInfo":{"name":"OpenCode","version":"1.19.6"}}}
+  "authMethods":[{"id":"opencode-login",...}],
+  "agentInfo":{"name":"OpenCode","version":"1.19.6"}}
 ```
 
-### 证据 4：`session/new` 成功
+完整往返：`session/new` → `session/prompt` → 流式 `"P"`+`"ONG"` → `stopReason: end_turn`，**12.4s**。
+
+### v2 @ 2.3.2
 
 ```json
-{"jsonrpc":"2.0","id":2,"result":{
-  "sessionId":"ses_dfcf4c80affeMcO5uI5mZ3KjZ4",
-  "configOptions":[
-    {"id":"model","name":"Model","category":"model","type":"select",
-     "currentValue":"opencode/big-pickle","options":[...23 个免费模型...]},
-    {"id":"mode","name":"Session Mode","category":"mode","type":"select","currentValue":"build"}]}}
+initialize → {"protocolVersion":1,
+  "agentCapabilities":{
+    "loadSession":true,
+    "mcpCapabilities":{"http":true,"sse":false},
+    "promptCapabilities":{"embeddedContext":true,"image":true},
+    "sessionCapabilities":{"additionalDirectories":{},"close":{},"delete":{},
+                           "fork":{},"list":{},"resume":{}},
+    "_meta":{"opencode/child-session-updates":true}},
+  "_meta":{"steering":{"supported":true}},
+  "agentInfo":{"name":"OpenCode","version":"2.3.2"}}
 ```
 
-注意：它自带了 23 个模型选项，包括 `opencode/deepseek-v4.1-flash-free` 等多个免费车道。
+完整往返：同样拿到 `PONG` + `end_turn`，**5.4s**。
 
-### 证据 5：完整 prompt 往返（**ova 用户，有网络**）
+## 三、逐字段差异（只有这三处，但都是实质的）
 
-真实 stdio 子进程脚本（`/home/ova/agent-clis/acp-test/handshake.mjs`）：
+| 字段 | v1 | v2 | 影响 |
+|---|---|---|---|
+| `mcpCapabilities.sse` | `true` | **`false`** | v2 不支持 MCP 的 SSE 传输，只用 http |
+| `sessionCapabilities.additionalDirectories` | 无 | **有** | v2 支持给会话追加额外工作目录 |
+| `sessionCapabilities.delete` | 无 | **有** | v2 能删除会话，v1 不能 |
+| `_meta["opencode/child-session-updates"]` | 无 | **`true`** | v2 声明子会话更新能力 |
+| `_meta.steering.supported` | 无 | **`true`** | v2 声明支持 steering（中途改向） |
 
-```
-initialize: {"name":"OpenCode","version":"1.19.6"}
-session/new: ses_dfcf309c2ffeRB4cM53F7YvU5l
-CHUNK: {"type":"text","text":"P"}
-CHUNK: {"type":"text","text":"ONG"}
-prompt stopReason: end_turn | elapsed 10099 ms
-```
+`protocolVersion` **两边都是 1**，未变。
+`session/new` 的 `configOptions` **结构一致**：都是 `model` + `mode` 两个选项，model 各 10 个。
 
-**这是完整闭环**：回答是流式的（两个 chunk 拼成 "PONG"），`stopReason: end_turn`。
+## 四、`acp` 子命令的参数差异
 
-### 证据 6（重要限制）：**dsh 用户下 prompt 超时**
+| 项 | v1 | v2 |
+|---|---|---|
+| `acp --help` 独有 | `--port` / `--hostname` / `--mdns` / `--mdns-domain` / `--cors` / `--cwd` | **只有 `--login`** |
+| 其余 flag | 同左 | 全部移到 `GLOBAL FLAGS`（`--log-level` 取值从 4 个扩到 10 个） |
 
-同一个脚本在 `dsh` 用户下：
-```
-initialize: ok
-session/new: ok   (ses_dfcf25b44ffeY3edl6VxPyvzgL)
-FAILED: session/prompt timeout | after 42409 ms
-```
+对官方 `dsh-subagent-acp` 的影响：它只需要 `command` + `args: ['acp']`，**两者都能直接用**。
+但如果将来要用 `--cwd`/`--port` 这类参数，**v2 没有**，不能照抄 v1 的配置。
 
-原因：opencode 的免费模型**需要真实外网**，而 dsh 的 egress 被 DSH_EGRESS 链 DROP。
-⇒ **在本机上，dsh 用户跑 opencode ACP 只能握手、不能出回答**。
+## 五、代理是硬前提（实测对照）
 
-这不是 ACP 的问题，是这台机器的网络约束。要让 DSH 里的 opencode 真正回答，
-必须解决 dsh 的出口（要么放行 opencode 需要的域名，要么让它走一个真正工作的代理）。
+`dsh` 用户的 egress 被 iptables `DSH_EGRESS` 限制，opencode 的免费模型需要真实外网。
 
-## 三、可直接使用的官方配置（前提是 dsh 能出网）
+| 代理 | `session/prompt` 结果 |
+|---|---|
+| `127.0.0.1:19893`（cfhop 的 mihomo） | **`end_turn`，PONG，12363 ms** ✅ |
+| `127.0.0.1:9`（故意给死端口） | **timeout，42740 ms** ❌ |
+
+同二进制、同 HOME，只有代理不同 —— **证明代理确实被 opencode 采用**，且它是出回答的硬前提。
+
+顺带纠正一条环境事实：AGENTS.md §5.1 说 `172.30.66.1:1091`「最稳」，
+但当前实测 **TCP 通、HTTP 全超时**；`172.30.0.1:13070/fwd` **端口不通**；
+真正可用的是 **`127.0.0.1:19893`**（`/home/ova/cfhop` 的 mihomo，`mixed-port: 19893`）。
+
+## 六、给插件的可执行配置
+
+两版都能走官方 `dsh-subagent-acp`，只是 `command` 不同：
 
 ```yaml
+# v1
 - id: subagent-acp
   name: '@deepseek-ai/dsh-subagent-acp'
   config:
     providerName: 'opencode'
     command: '/home/ova/agent-clis/oc/node_modules/opencode-ai/bin/opencode.exe'
     args: ['acp']
-    permission: 'allow'    # 或 'reject'，看你要不要让它改文件
+
+# v2
+- id: subagent-acp
+  name: '@deepseek-ai/dsh-subagent-acp'
+  config:
+    providerName: 'opencode2'
+    command: '/home/dsh/.artifacts-live-test/oc2/node_modules/@opencode/cli-linux-x64/bin/opencode'
+    args: ['acp']
 ```
 
-之后模型会多出一个全局工具（`toolName` 由 `dsh-tool-subagent` 的 row 配置决定，
-参考官方 base bundle 里 `tool-subagent` 的写法）。
+两者都需要在进程环境里有可用代理（如 `HTTPS_PROXY=http://127.0.0.1:19893`），
+否则 `session/prompt` 会超时——这一点必须写在配置旁边，不能假设用户知道。
 
-**能力边界（官方 ACP provider 声明的）**：
+## 七、能力边界（官方 ACP provider 声明的，两版都受限）
+
 ```ts
-capabilities = { agentOptions:false, outputSchema:false, depthLimit:false, toolFilter:false, persona:false }
+capabilities = { agentOptions:false, outputSchema:false, depthLimit:false,
+                 toolFilter:false, persona:false }
 inheritsParentContext = false
 ```
+
 即：不继承父上下文、不能选 model/reasoning、不能要 structured output。
+本插件的 CLI 包装层补齐的正是这些（`resumeSessionId`、`model` 覆盖、会话历史浏览/导入）。
 
-## 四、zcode — 无法验证，且 npm 上没有官方包
+## 八、未做
 
-| 查询 | 结果 |
-|---|---|
-| `npm view zcode version` | `0.0.1` |
-| `npm view zcode bin` | **`None`**（没有可执行文件） |
-| `npm view zcode description` | `This is a nice project` |
-| `npm view zcode author` | `S.Crawish` |
-| `npm view @zcode/cli` | **404 Not Found** |
-
-⇒ npm 上的 `zcode` 是一个**空壳占位包**（无 bin、无意义描述、非 z.ai 官方）。
-**zcode CLI 在本机无从验证**，不能声称它支持或支持不 ACP。
-
-本插件的 `commandTemplate` 模板模式（`providers.zcode.enabled` + `commandTemplate`）
-是唯一可配置途径，前提是用户自己有 zcode 二进制。
-
-## 五、这对插件意味着什么（建议）
-
-1. **opencode 可以走官方 ACP 通道**——这是"第三方 agent 对齐进官方"的**第一个实证案例**。
-   前提是 dsh 能出网。
-2. **本插件的 opencode CLI 包装层仍有价值**：ACP provider 不支持 `agentOptions`
-   （不能指定 model）、不支持 resume（`inheritsParentContext:false` + 一次性），
-   而我们的包装层支持 `resumeSessionId`、`model`、会话历史浏览/导入。
-3. **两条路可以并存**，不是二选一：
-   - 想"官方对齐、一次性委派" → 官方 `subagent-acp` + opencode
-   - 想"续聊、浏览历史、导入会话" → 本插件 `agent_dispatch`(opencode)
-4. **建议给 README 补这条实测结论**（当前 README 只写了"unverified"）。
-
-## 六、未做与限制
-
-- **没有跑通 `dsh-subagent-acp` 官方 provider 本身**：需要把 bundle 装进 profile 并重启 GUI，
-  且 dsh 必须先能出网。我只验证了 opencode 侧的 ACP 协议正确性。
-- **没有测 `session/prompt` 在 dsh 用户下的可用性**（超时，见上）。
-- **没有测 ACP 的 `permission` 策略**（`allow`/`reject` 对 opencode 编辑文件的实际行为）。
+- **没有装 `dsh-subagent-acp` 进 profile**（需重启 GUI，未获授权）
+- **没有测 ACP 的 `permission` 策略**（`allow`/`reject` 对 opencode 编辑文件的实际行为）
+- **v2 的 `additionalDirectories` / `delete` / `steering`** 只核对了声明，未逐个实测
