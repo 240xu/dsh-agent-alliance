@@ -14,6 +14,7 @@ import { parseClaudeStreamJson } from '../parse.js'
 import { defineProvider as defineProviderShim } from './types.js'
 
 import { termuxPrefix } from './shared.js';
+import { probeVersion } from './shared.js';
 export function claudeDefaultPaths() {
   return {
     grun: termuxPrefix() + '/bin/grun',
@@ -27,17 +28,13 @@ export function makeClaudeProvider({ deps = {}, config = {} } = {}) {
   const paths = { ...claudeDefaultPaths(), ...(deps.paths || {}) }
 
   async function detect({ signal } = {}) {
-    try {
-      const r = await spawnCli({ argv: [paths.grun, paths.claudeBin, '--version'], timeoutMs: 15000, signal })
-      if (r.code !== 0) {
-        // The official diagnostic contract forbids raw protocol payloads in
-        // model-facing detail; keep only the coarse category.
-        return { available: false, detail: 'category: ' + classifyCliFailure(r) }
-      }
-      return { available: true, version: r.stdout.trim().split('\n')[0] }
-    } catch (err) {
-      return { available: false, detail: String(err?.message || err) }
-    }
+    return probeVersion({
+      spawn: spawnCli,
+      classify: classifyCliFailure,
+      argv: [paths.grun, paths.claudeBin, '--version'],
+      timeoutMs: 15000,
+      ...(signal === undefined ? {} : { signal }),
+    })
   }
 
   async function dispatch({ prompt, cwd, resumeSessionId, model, timeoutMs = 300000, signal }) {

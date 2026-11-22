@@ -14,6 +14,7 @@ import { parseCodexOutput } from '../parse.js'
 import { defineProvider } from './types.js'
 
 import { termuxPrefix } from './shared.js';
+import { probeVersion } from './shared.js';
 export function codexDefaultPaths() {
   return {
     codexJs: termuxPrefix() + '/lib/node_modules/@openai/codex/bin/codex.js',
@@ -26,18 +27,18 @@ export function makeCodexProvider({ deps = {}, config = {} } = {}) {
   const paths = { ...codexDefaultPaths(), ...(deps.paths || {}) }
 
   async function detect({ signal } = {}) {
-    try {
-      const r = await spawnCli({ argv: [process.execPath, paths.codexJs, '--version'], timeoutMs: 20000, signal })
-      if (r.code !== 0) {
-        // The official diagnostic contract forbids raw protocol payloads in
-        // model-facing detail; keep only the coarse category.
-        return { available: false, detail: 'category: ' + classifyCliFailure(r) }
-      }
-      const m = r.stdout.match(/codex-cli\s+(\S+)/i)
-      return { available: true, version: m ? m[1] : r.stdout.trim().split('\n')[0] }
-    } catch (err) {
-      return { available: false, detail: String(err?.message || err) }
-    }
+    return probeVersion({
+      spawn: spawnCli,
+      classify: classifyCliFailure,
+      argv: [process.execPath, paths.codexJs, '--version'],
+      timeoutMs: 20000,
+      ...(signal === undefined ? {} : { signal }),
+      // `codex-cli 0.167.1`; take the version token, else the first line.
+      parseVersion: (stdout) => {
+        const match = stdout.match(/codex-cli\s+(\S+)/i)
+        return match === null ? undefined : match[1]
+      },
+    })
   }
 
   async function dispatch({ prompt, cwd, resumeSessionId, model, timeoutMs = 300000, signal }) {

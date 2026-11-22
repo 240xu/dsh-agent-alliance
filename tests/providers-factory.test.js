@@ -60,3 +60,46 @@ test('a malformed paths value is rejected at config load', async () => {
     /non-empty string/,
   )
 })
+
+test('probeVersion never throws and classifies failures itself', async () => {
+  const { probeVersion } = await import('../src/provider/shared.js')
+
+  const ok = await probeVersion({
+    spawn: async () => ({ code: 0, stdout: 'v9\nrest', stderr: '' }),
+    classify: () => 'unknown',
+    argv: ['x'],
+    timeoutMs: 100,
+  })
+  assert.equal(ok.available, true)
+  assert.equal(ok.version, 'v9')
+
+  // A failing spawn must not escape: the probe contract is "never throw".
+  const failed = await probeVersion({
+    spawn: async () => ({ code: 1, stdout: '', stderr: 'boom' }),
+    classify: () => 'product-error',
+    argv: ['x'],
+    timeoutMs: 100,
+  })
+  assert.equal(failed.available, false)
+  // The category, not the raw stderr — the official diagnostic contract.
+  assert.equal(failed.detail, 'category: product-error')
+  assert.doesNotMatch(String(failed.detail), /boom/)
+
+  const threw = await probeVersion({
+    spawn: async () => { throw new Error('spawn ENOENT') },
+    classify: () => 'unknown',
+    argv: ['x'],
+    timeoutMs: 100,
+  })
+  assert.equal(threw.available, false)
+  assert.match(String(threw.detail), /ENOENT/)
+
+  const custom = await probeVersion({
+    spawn: async () => ({ code: 0, stdout: 'codex-cli 0.167.1' }),
+    classify: () => 'unknown',
+    argv: ['x'],
+    timeoutMs: 100,
+    parseVersion: (out) => out.match(/codex-cli\s+(\S+)/i)?.[1],
+  })
+  assert.equal(custom.version, '0.167.1')
+})

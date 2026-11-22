@@ -49,3 +49,34 @@ export async function withReadOnlyDb(open, injected, run) {
     }
   }
 }
+
+/**
+ * Probe one external CLI's availability with a single `--version` spawn.
+ *
+ * The spawn-based providers differ only in the argv, the timeout, and how the
+ * version string is recognised. The failure contract is identical: never throw,
+ * classify the failure into the official taxonomy, and never forward raw
+ * protocol output to the model. That shared half lives here.
+ * @param {object} options probe request
+ * @param {(request: object) => Promise<object>} options.spawn launches the CLI
+ * @param {(result: object) => string} options.classify maps a failed result to a category
+ * @param {string[]} options.argv executable and arguments for version probing
+ * @param {number} options.timeoutMs probe timeout
+ * @param {AbortSignal} [options.signal] caller cancellation
+ * @param {object} [options.env] explicit environment overlay
+ * @param {(stdout: string) => string|undefined} [options.parseVersion] version extractor
+ * @returns {Promise<{available: boolean, version?: string, detail?: string}>} probe verdict
+ */
+export async function probeVersion({ spawn, classify, argv, timeoutMs, signal, env, parseVersion }) {
+  try {
+    const r = await spawn({ argv, timeoutMs, signal, ...(env === undefined ? {} : { env }) })
+    if (r.code !== 0) {
+      return { available: false, detail: 'category: ' + classify(r) }
+    }
+    const raw = String(r.stdout || '').trim()
+    const version = parseVersion === undefined ? raw.split('\n')[0] : parseVersion(raw)
+    return { available: true, version: version ?? raw.split('\n')[0] }
+  } catch (err) {
+    return { available: false, detail: String(err?.message || err) }
+  }
+}
