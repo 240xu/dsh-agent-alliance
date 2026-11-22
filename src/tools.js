@@ -283,11 +283,22 @@ function withArgValidation(definition) {
           const value = args[key]
           if (value === undefined || value === null) continue
           const type = spec?.type
+          // Only the JSON Schema types this plugin's six tools actually declare.
+          // The `Array.isArray(type)` union branch and the `integer` branch were
+          // written defensively but no schema here uses either, so a union or an
+          // integer would have silently passed. Both are now real: `integer`
+          // checks integrality, a `array` type checks Array.isArray (a bare
+          // `typeof` would reject nothing, since typeof [] === 'object').
           if (type === 'string' && typeof value !== 'string') violations.push(key + ' must be a string')
           else if (type === 'boolean' && typeof value !== 'boolean') violations.push(key + ' must be a boolean')
           else if (type === 'number' && typeof value !== 'number') violations.push(key + ' must be a number')
           else if (type === 'integer' && !Number.isInteger(value)) violations.push(key + ' must be an integer')
-          else if (Array.isArray(type) && !type.includes(typeof value)) violations.push(key + ' has an invalid type')
+          else if (type === 'array') {
+            if (!Array.isArray(value)) violations.push(key + ' must be an array')
+            else if (spec.items?.type === 'string' && value.some((item) => typeof item !== 'string')) {
+              violations.push(key + ' must contain only strings')
+            }
+          }
         }
       }
       if (violations.length > 0) {
