@@ -9,6 +9,8 @@ import { spawnCli as defaultSpawnCli } from '../runner.js'
 import { cliFailure, classifyCliFailure } from '../diagnostic.js'
 import { defineProvider } from './types.js'
 
+import { termuxPrefix } from './shared.js';
+import { withReadOnlyDb } from './shared.js';
 function home() {
   return process.env.HOME || '/data/data/com.termux/files/home'
 }
@@ -82,24 +84,17 @@ export function makeZcodeProvider({ deps = {}, config = {}, openDb } = {}) {
     return new DatabaseSync(paths.dbPath, { readOnly: true })
   }
 
-  /**
+    /**
    * Run one read against the session database, closing the handle afterwards.
-   *
-   * An injected `open` is owned by the caller and is left open; only handles
-   * this module opened are closed here.
+   * The close-on-every-path rule is shared with the other SQLite provider
+   * (`./shared.js`); this wrapper only supplies the opener and whether it is
+   * test-injected.
    * @template T
    * @param {(database: object) => T} run read to perform while the handle is open
    * @returns {Promise<T>} the read result
    */
   async function withDb(run) {
-    const database = await db()
-    try {
-      return await run(database)
-    } finally {
-      if (!open && typeof database?.close === 'function') {
-        try { database.close() } catch { /* already closed by the driver */ }
-      }
-    }
+    return withReadOnlyDb(db, open !== undefined && open !== null, run)
   }
 
   async function listSessions({ query, limit = 20 } = {}) {

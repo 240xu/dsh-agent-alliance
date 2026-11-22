@@ -9,10 +9,8 @@ import { cliFailure, classifyCliFailure } from '../diagnostic.js'
 import { parseOpencodeEvents } from '../parse.js'
 import { defineProvider } from './types.js'
 
-function prefix() {
-  return process.env.PREFIX || '/data/data/com.termux/files/usr'
-}
-
+import { termuxPrefix } from './shared.js';
+import { withReadOnlyDb } from './shared.js';
 function home() {
   return process.env.HOME || '/data/data/com.termux/files/home'
 }
@@ -33,7 +31,7 @@ export function makeOpencodeProvider({ deps = {}, config = {} } = {}) {
     try {
       const r = await spawnCli({
         argv: [paths.opencodeBin, '--version'], timeoutMs: 15000, signal,
-        env: { TMPDIR: prefix() + '/tmp' },
+        env: { TMPDIR: termuxPrefix() + '/tmp' },
       })
       if (r.code !== 0) {
         // The official diagnostic contract forbids raw protocol payloads in
@@ -52,7 +50,7 @@ export function makeOpencodeProvider({ deps = {}, config = {} } = {}) {
     if (resumeSessionId) argv.push('-s', String(resumeSessionId))
     if (effModel) argv.push('-m', String(effModel))
     argv.push('--format', 'json')
-    const env = { TMPDIR: prefix() + '/tmp' }
+    const env = { TMPDIR: termuxPrefix() + '/tmp' }
     const r = await spawnCli({ argv, cwd, env, timeoutMs, signal })
     const parsed = parseOpencodeEvents(r.stdout)
     // Non-zero exit wins over printed text: `--format json` emits text parts for
@@ -80,25 +78,17 @@ export function makeOpencodeProvider({ deps = {}, config = {} } = {}) {
     return new DatabaseSync(paths.dbPath, { readOnly: true })
   }
 
-  /**
+    /**
    * Run one read against the session database, closing the handle afterwards.
-   *
-   * An injected `openDb` is owned by the caller and is left open; only handles
-   * this module opened are closed here.
+   * The close-on-every-path rule is shared with the other SQLite provider
+   * (`./shared.js`); this wrapper only supplies the opener and whether it is
+   * test-injected.
    * @template T
    * @param {(database: object) => T} run read to perform while the handle is open
    * @returns {Promise<T>} the read result
    */
   async function withDb(run) {
-    const database = await db()
-    try {
-      return await run(database)
-    } finally {
-      // `openDb` injection is test-owned; closing it would break the caller.
-      if (!openDb && typeof database?.close === 'function') {
-        try { database.close() } catch { /* already closed by the driver */ }
-      }
-    }
+    return withReadOnlyDb(db, openDb !== undefined && openDb !== null, run)
   }
 
   async function listSessions({ query, limit = 20 } = {}) {

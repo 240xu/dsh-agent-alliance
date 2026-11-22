@@ -13,13 +13,10 @@ import { cliFailure, classifyCliFailure } from '../diagnostic.js'
 import { parseCodexOutput } from '../parse.js'
 import { defineProvider } from './types.js'
 
-function prefix() {
-  return process.env.PREFIX || '/data/data/com.termux/files/usr'
-}
-
+import { termuxPrefix } from './shared.js';
 export function codexDefaultPaths() {
   return {
-    codexJs: prefix() + '/lib/node_modules/@openai/codex/bin/codex.js',
+    codexJs: termuxPrefix() + '/lib/node_modules/@openai/codex/bin/codex.js',
     sessionsRoot: join(homedir(), '.codex', 'sessions'),
   }
 }

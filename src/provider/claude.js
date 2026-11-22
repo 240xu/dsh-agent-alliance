@@ -13,14 +13,11 @@ import { cliFailure, classifyCliFailure } from '../diagnostic.js'
 import { parseClaudeStreamJson } from '../parse.js'
 import { defineProvider as defineProviderShim } from './types.js'
 
-function prefix() {
-  return process.env.PREFIX || '/data/data/com.termux/files/usr'
-}
-
+import { termuxPrefix } from './shared.js';
 export function claudeDefaultPaths() {
   return {
-    grun: prefix() + '/bin/grun',
-    claudeBin: prefix() + '/lib/node_modules/@anthropic-ai/claude-code-linux-arm64/claude',
+    grun: termuxPrefix() + '/bin/grun',
+    claudeBin: termuxPrefix() + '/lib/node_modules/@anthropic-ai/claude-code-linux-arm64/claude',
     projectsRoot: join(homedir(), '.claude', 'projects'),
   }
 }
@@ -49,7 +46,7 @@ export function makeClaudeProvider({ deps = {}, config = {} } = {}) {
     const effModel = model || config.defaultModel || null
     if (effModel) argv.push('--model', String(effModel))
     // Termux 无 /tmp，grun 二进制会写 /tmp/claude-*：强制 TMPDIR 归一
-    const r = await spawnCli({ argv, cwd, timeoutMs, signal, env: { TMPDIR: prefix() + '/tmp' } })
+    const r = await spawnCli({ argv, cwd, timeoutMs, signal, env: { TMPDIR: termuxPrefix() + '/tmp' } })
     // Non-zero exit wins over printed text. stream-json collects any assistant
     // text block, including one whose content is "API Error: 429", so a failed
     // run would otherwise resolve as a successful answer.
