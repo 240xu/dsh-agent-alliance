@@ -724,3 +724,25 @@ test('each JobError code produces its own remedy, not one generic hint', async (
     )
   }
 })
+
+test('the roundtable description warns once about quota, not twice', async () => {
+  const { registerTools } = await import('../src/tools.js')
+  const tools = []
+  registerTools(
+    { tools: { register: (def) => { tools.push(def); return () => {} } }, get: () => undefined },
+    { resolver: { resolve: () => ({ kind: 'cli', async dispatch() { return { text: 'x', backend: 'cli' } } }), list: () => [] },
+      registry: { list: () => [], get: () => ({}) },
+      config: { defaults: { timeoutMs: 1000, maxConcurrent: 1 } }, home: '/tmp' },
+  )
+  const roundtable = tools.find((t) => t.name === 'agent_roundtable').description
+  const dispatch = tools.find((t) => t.name === 'agent_dispatch').description
+
+  // The shared COST_WARNING says "the target agent"; a roundtable has many
+  // targets, so it carries its own accurate sentence instead of that warning
+  // plus a duplicate restating it.
+  assert.equal((roundtable.match(/spends/g) ?? []).length, 1, 'quota must be mentioned once')
+  assert.doesNotMatch(roundtable, /the target agent's quota/)
+  assert.match(roundtable, /Every member spends its own quota/)
+  // Dispatch still uses the shared warning verbatim.
+  assert.match(dispatch, /the target agent's quota/)
+})

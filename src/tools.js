@@ -231,22 +231,6 @@ function renderDispatch(header, value) {
 }
 
 /**
- * Register every model-facing tool of the plugin.
- *
- * Each registration returns a disposer that the plugin's fiber owns; the caller
- * wraps this function in `ctx.effect()` so an unload unregisters all six tools.
- * @param {object} ctx plugin context; uses `ctx.tools`, `ctx.jobs`, and `ctx.get`
- * @param {object} options tool dependencies
- * @param {{ resolve(request: object): object, list(parent?: object): object[] }} options.resolver
- *   backend resolver; `resolve` returns a backend with `dispatch(request)`
- * @param {object} options.registry CLI provider registry (`list()` / `get(id)`)
- * @param {object} options.config resolved configuration
- * @param {object} [options.io] context handed to the importer, whose optional
- *   host services are resolved without a bare property read
- * @param {string} [options.home] DSH home directory for the import ledger
- * @returns {() => void} disposer unregistering every tool this call registered
- */
-/**
  * Validate tool arguments against the declared JSON Schema before execute.
  *
  * `ctx.tools.register` validates the SCHEMA at registration time but not the
@@ -311,6 +295,22 @@ function withArgValidation(definition) {
   }
 }
 
+/**
+ * Register every model-facing tool of the plugin.
+ *
+ * Each registration returns a disposer that the plugin's fiber owns; the caller
+ * wraps this function in `ctx.effect()` so an unload unregisters all six tools.
+ * @param {object} ctx plugin context; uses `ctx.tools`, `ctx.jobs`, and `ctx.get`
+ * @param {object} options tool dependencies
+ * @param {{ resolve(request: object): object, list(parent?: object): object[] }} options.resolver
+ *   backend resolver; `resolve` returns a backend with `dispatch(request)`
+ * @param {object} options.registry CLI provider registry (`list()` / `get(id)`)
+ * @param {object} options.config resolved configuration
+ * @param {object} [options.io] context handed to the importer, whose optional
+ *   host services are resolved without a bare property read
+ * @param {string} [options.home] DSH home directory for the import ledger
+ * @returns {() => void} disposer unregistering every tool this call registered
+ */
 export function registerTools(ctx, { resolver, registry, config, home, io }) {
   const defaults = config?.defaults || {}
   const defaultTimeout = Number(defaults.timeoutMs) || 300000
@@ -459,8 +459,10 @@ export function registerTools(ctx, { resolver, registry, config, home, io }) {
       'Run a roundtable: send the same question to several EXTERNAL agents concurrently and return their answers side by side for your own synthesis.',
       'This compares independent external agents. To delegate work to in-harness children, use the `subagent` or',
       '`subagent_fork` tools instead — the latter inherits this conversation and stays cache-eligible.',
-      COST_WARNING,
-      'Every member spends quota and may read or write files in its cwd.',
+      // COST_WARNING says "the target agent"; for a roundtable every member is
+      // a target, so one member-accurate sentence replaces both the shared
+      // warning and the duplicate that repeated it.
+      'Every member spends its own quota and may read or write files in its cwd; confirm before important work.',
       'rounds is clamped to 1..3; from round 2 on each member sees the others\' previous answers. Default providers are every configured backend.',
       'background defaults to true and returns a job id; false waits for every member in the foreground.',
     ].join('\n'),
