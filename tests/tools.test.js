@@ -506,8 +506,17 @@ test('a capacity refusal is not silently converted into inline execution', async
     // A jobs service that refuses for capacity, the way dsh-jobs-local does at
     // its per-owner cap. Falling back to inline here would spend the whole
     // foreground budget with no job id to cancel.
+    // The real `dsh-jobs-local` throws `JobError` with a stable code; a fake
+    // that throws a bare Error would be LESS capable than the host and would
+    // push the implementation back onto message parsing.
     get: (name) => name === 'jobs'
-      ? { start() { throw new Error('background job limit reached for this owner (limit: 4)') } }
+      ? {
+          start() {
+            const error = new Error('background job limit reached for this owner (limit: 4)')
+            error.code = 'JOB_LIMIT_REACHED'
+            throw error
+          },
+        }
       : undefined,
     logger: { warn() {} },
   }
@@ -525,9 +534,12 @@ test('a capacity refusal is not silently converted into inline execution', async
     () => dispatch.execute({ provider: 'p1', prompt: 'x', background: true }, { signal: new AbortController().signal, agent: { id: 's1' } }),
     (error) => {
       assert.match(String(error.message), /limit reached/)
-      // The official tool-bash throws an actionable message naming the package
-      // that provides the missing service; mirror that guidance.
-      assert.match(String(error.message), /@deepseek-ai\/dsh-tool-jobs/)
+      // Each JobError code has a different remedy, so the hint must match the
+      // code; a capacity refusal must not tell the caller to install a package
+      // that is already mounted.
+      assert.equal(error.code, 'JOB_LIMIT_REACHED')
+      assert.match(String(error.message), /concurrent-job limit/)
+      assert.doesNotMatch(String(error.message), /dsh-tool-jobs/)
       return true
     },
     'a capacity refusal must surface instead of degrading to inline execution',
@@ -675,4 +687,40 @@ test('raw tool registration validates arguments like the official defineTool', a
   // A valid call still dispatches (the fake backend returns a result).
   const ok = await dispatch.execute({ prompt: 'hello' }, exec)
   assert.equal(typeof ok, 'object')
+})
+
+test('each JobError code produces its own remedy, not one generic hint', async () => {
+  const { registerTools } = await import('../src/tools.js')
+  const cases = [
+    ['JOB_CONTROLLER_UNAVAILABLE', /dsh-tool-jobs/],
+    ['JOB_LIMIT_REACHED', /concurrent-job limit/],
+    ['JOB_OWNER_NOT_LIVE', /not live/],
+  ]
+  for (const [code, expected] of cases) {
+    const tools = []
+    const ctx = {
+      tools: { register: (def) => { tools.push(def); return () => {} } },
+      get: (name) => name === 'jobs'
+        ? { start() { const error = new Error('refused'); error.code = code; throw error } }
+        : name === 'connection' ? { requestRejection: () => undefined } : undefined,
+    }
+    registerTools(ctx, {
+      resolver: {
+        resolve: () => ({ id: 'p1', kind: 'cli', async dispatch() { return { text: 'x', backend: 'cli' } } }),
+        list: () => [{ id: 'p1', label: 'P1', kind: 'cli', available: true }],
+      },
+      registry: { list: () => [{ id: 'p1', label: 'P1' }], get: () => ({}) },
+      config: { providers: {}, defaults: { timeoutMs: 1000, maxConcurrent: 1 } },
+      home: '/tmp',
+    })
+    const dispatch = tools.find((t) => t.name === 'agent_dispatch')
+    await assert.rejects(
+      () => dispatch.execute({ provider: 'p1', prompt: 'x', background: true }, { signal: new AbortController().signal, agent: { id: 's1' } }),
+      (error) => {
+        assert.equal(error.code, code, 'the code must survive to the caller')
+        assert.match(String(error.message), expected, `${code} needs its own next action`)
+        return true
+      },
+    )
+  }
 })

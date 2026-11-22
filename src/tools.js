@@ -114,8 +114,8 @@ function createSemaphore(limit) {
  * does not mount a jobs service, so the caller runs inline. A mounted service
  * that REFUSES the start (capacity cap, invalid spec, no controller for the
  * owner) is a real failure and must surface — the official error-handling rule
- * is "never route handling by parsing messages", and `dsh-jobs-local` throws
- * bare `Error`s with no code to match on.
+ * is "never route handling by parsing messages". `dsh-jobs-local` throws
+ * `JobError` carrying a stable `JobErrorCode`, so this routes on that code.
  * @param {object} ctx plugin context; `jobs` may be absent
  * @param {object} spec `{ kind, label, owner?, outputLimitBytes?, run(job) }`
  * @returns {string|undefined} the JobId string, or undefined when no jobs service exists
@@ -127,10 +127,20 @@ function startJob(ctx, spec) {
   try {
     return jobs.start(spec)
   } catch (error) {
-    const annotated = new Error(
-      'background job refused: ' + String(error?.message || error)
-      + ' — enable @deepseek-ai/dsh-tool-jobs in this composition to provide a job controller',
-    )
+    // `dsh-jobs-local` throws `JobError` with a stable code (JOB_CONTROLLER_UNAVAILABLE,
+    // JOB_LIMIT_REACHED, JOB_OWNER_NOT_LIVE, …). Route on the code, never the
+    // message — the wording is not an API. Each code has a different remedy, so
+    // one generic hint would send the caller after the wrong fix.
+    const code = typeof error?.code === 'string' ? error.code : undefined
+    const hint = code === 'JOB_CONTROLLER_UNAVAILABLE'
+      ? ' — the composition mounts jobs but no controller serves this owner; enable @deepseek-ai/dsh-tool-jobs'
+      : code === 'JOB_LIMIT_REACHED'
+        ? ' — this owner is at its concurrent-job limit; wait for one to finish or kill an unneeded job'
+        : code === 'JOB_OWNER_NOT_LIVE' || code === 'JOB_OWNER_REGISTRY_UNAVAILABLE'
+          ? ' — the owning Agent is not live; run in the foreground or dispatch without an owner'
+          : ''
+    const annotated = new Error('background job refused: ' + String(error?.message || error) + hint)
+    annotated.code = code
     annotated.cause = error
     throw annotated
   }
