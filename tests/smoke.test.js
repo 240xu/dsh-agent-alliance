@@ -44,3 +44,22 @@ test('the host entry resolves the modules package.json exposes', async () => {
     assert.ok(fs.existsSync(path.join(ROOT, relative)), relative + ' must exist')
   }
 })
+
+test('host.js is the only definition of serviceOf', async () => {
+  const { readFileSync, readdirSync, statSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const root = new URL('..', import.meta.url).pathname
+  const offenders = []
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir)) {
+      if (entry === 'node_modules' || entry === 'docs' || entry === 'tests') continue
+      const full = join(dir, entry)
+      if (statSync(full).isDirectory()) { walk(full); continue }
+      if (!entry.endsWith('.js')) continue
+      if (full.endsWith('src/host.js')) continue
+      if (/function serviceOf\s*\(/.test(readFileSync(full, 'utf8'))) offenders.push(full.slice(root.length))
+    }
+  }
+  walk(root)
+  assert.deepEqual(offenders, [], 'every module must import serviceOf from src/host.js')
+})

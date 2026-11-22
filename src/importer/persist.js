@@ -13,6 +13,7 @@ import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { convertToDshEvents } from './convert.js'
+import { serviceOf } from '../host.js';
 
 const SESSION_FORMAT_VERSION = 4
 
@@ -115,32 +116,6 @@ export async function recordLedgerEntry(home, mutate) {
   } finally {
     // Drop the map entry once this was the last write queued for the path.
     if (ledgerWrites.get(path) === tail) ledgerWrites.delete(path)
-  }
-}
-
-/**
- * Resolve one optional Cordis service.
- *
- * `ctx.get(name)` is the portable read: a plugin that does not declare the
- * service in `inject` gets `undefined` from it, while a bare `ctx[name]`
- * property read throws `cannot get property "…" without inject`. Both forms are
- * tried so the module works under a real context and a lightweight fake alike.
- * @param {object} ctx host context
- * @param {string} name service name
- * @returns {unknown} the service, or undefined when absent
- */
-function serviceOf(ctx, name) {
-  if (ctx === null || typeof ctx !== 'object') return undefined
-  if (typeof ctx.get === 'function') {
-    try {
-      const service = ctx.get(name)
-      if (service !== undefined) return service
-    } catch { /* unmounted service: treat as absent */ }
-  }
-  try {
-    return ctx[name]
-  } catch {
-    return undefined
   }
 }
 

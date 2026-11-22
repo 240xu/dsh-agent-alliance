@@ -2,6 +2,7 @@
 // 规格：docs/SPEC-v2.md「Backend resolution (the alignment with official subagents)」。
 
 import { limitDiagnostic } from './diagnostic.js'
+import { serviceOf } from './host.js';
 
 const OFFICIAL_DETAIL = 'official subagent provider'
 
@@ -11,23 +12,6 @@ function isObject(value) {
 
 // Cordis 服务既可能经 ctx.get(name) 取，也可能直接挂在 ctx 上；两者都缺失即视为没有。
 // 直接属性访问在 Cordis 里会抛 `cannot get property ... without inject`，必须包住。
-function serviceOf(ctx, name) {
-  if (!isObject(ctx)) return undefined
-  if (typeof ctx.get === 'function') {
-    try {
-      const service = ctx.get(name)
-      if (service !== undefined) return service
-    } catch (err) {
-      // ctx.get 对未挂载的服务可能抛错；按“服务缺失”处理，绝不让插件启动失败。
-    }
-  }
-  try {
-    return ctx[name]
-  } catch (err) {
-    return undefined
-  }
-}
-
 // 活体 Agent 的最低判定：有 id，且宿主 agents 服务能按 id 取回同一个对象。
 // 没有 agents 服务（headless / CLI-only 装配）时只做结构判定，交给 startActivation 自己校验。
 function isLiveAgent(ctx, parent) {

@@ -15,6 +15,7 @@ import { buildProviders } from './src/providers.js'
 import { createBackendResolver } from './src/backend.js'
 import { registerTools } from './src/tools.js'
 import { registerHttp } from './src/http.js'
+import { serviceOf } from './src/host.js';
 
 /** Cordis function-plugin name. */
 export const name = 'agent-alliance'
@@ -62,32 +63,6 @@ export const Config = {
  */
 function resolveHome() {
   return process.env.DSH_HOME || join(homedir(), '.dsh')
-}
-
-/**
- * Read one optional Cordis service without declaring it in `inject`.
- *
- * `ctx.get(name)` returns undefined for a service this plugin did not inject; a
- * bare property read would throw "cannot get property ... without inject", so it
- * is only attempted as a fallback for plain-object contexts.
- * @param {object} ctx plugin context
- * @param {string} service service name
- * @returns {object|undefined} the service, or undefined when absent
- */
-function serviceOf(ctx, service) {
-  if (typeof ctx?.get === 'function') {
-    try {
-      const resolved = ctx.get(service)
-      if (resolved !== undefined) return resolved
-    } catch {
-      // `get` threw for a service outside this plugin's injected set.
-    }
-  }
-  try {
-    return ctx?.[service] ?? undefined
-  } catch {
-    return undefined
-  }
 }
 
 /**

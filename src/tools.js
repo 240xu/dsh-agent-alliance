@@ -12,6 +12,7 @@
 
 import { runRoundtable, formatRoundtableText } from './roundtable.js'
 import { loadLedger, importOne, sourceKey } from './importer/persist.js'
+import { serviceOf } from './host.js';
 
 /** Cost and side-effect warning repeated in every tool description. */
 const COST_WARNING = 'This spends the target agent\'s quota and it may read or write files in its cwd; confirm before important work.'
@@ -101,32 +102,6 @@ function createSemaphore(limit) {
         }
       })
     },
-  }
-}
-
-/**
- * Read one optional Cordis service without declaring it in `inject`.
- *
- * `ctx.get(name)` returns undefined for a service this plugin did not inject.
- * A bare property read would throw "cannot get property ... without inject", so
- * it is only attempted as a fallback for fake contexts (tests, plain objects).
- * @param {object} ctx plugin context
- * @param {string} service service name
- * @returns {object|undefined} the service, or undefined when absent
- */
-function serviceOf(ctx, service) {
-  if (typeof ctx?.get === 'function') {
-    try {
-      const resolved = ctx.get(service)
-      if (resolved !== undefined) return resolved
-    } catch {
-      // `get` threw for a service outside the injected set: treat as absent.
-    }
-  }
-  try {
-    return ctx?.[service] ?? undefined
-  } catch {
-    return undefined
   }
 }
 
