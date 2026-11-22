@@ -166,6 +166,30 @@ DeepSeek Harness **扩展插件**：把 **Claude Code / Codex / OpenCode / ZCode
 ```
 
 - `subagentProvider` **默认为空**（该家只走 CLI 包装层）；显式填写才启用官方 backend 路径
+
+### 第三方 agent（opencode / zcode）如何"进官方"
+
+官方没有为任何第三方 CLI 做 provider（npm 上的官方 subagent 包只有
+`spawn` / `fork` / `codex` / `claude-code` / `acp` / `dsh-sdk`）。
+官方给第三方 agent 留的**唯一正式通道**是 `@deepseek-ai/dsh-subagent-acp`：
+
+```yaml
+- id: subagent-acp
+  name: '@deepseek-ai/dsh-subagent-acp'
+  config:
+    providerName: 'acp'
+    command: '/path/to/agent-cli'   # 该 CLI 必须以 ACP 协议通信
+    args: ['acp']                   # 按该 CLI 的 ACP 启动语法
+```
+
+它接受任何 ACP-compatible agent，`capabilities` 全为 false（out-of-process，
+声明不出任何父进程能力）、`inheritsParentContext` 为 false。
+**判据是那个 CLI 是否讲 ACP 协议**，不是它的牌子。
+
+> 已核实的边界：`opencode-ai@1.19.6` 的 npm metadata 无 ACP 相关声明，
+> 本机安装实测超时（无法跑 `--help` 确认是否有 `acp` 子命令）。
+> 因此本文不声称 opencode/zcode 支持 ACP——**这是需要实测才能下的结论**。
+> 支持则走上面的官方通道；不支持则本插件的 CLI 包装层是唯一路径。
 - `zcode` 走 `commandTemplate` 模板（`{prompt}` `{session}` `{cwd}`，单引号安全转义）
 - `maxConcurrent` 限制同时派发到外部 agent 的在飞数量；排队期间取消立即出队
 - 各家探测（**仅 CLI 路径**）：claude 经 grun；codex 绝对 node 入口；opencode 强制 TMPDIR 归一；
