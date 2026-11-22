@@ -32,6 +32,26 @@ const MAX_BODY_BYTES = 1024 * 1024
  * @param {object} req node:http request (only `headers` is read)
  * @returns {number|undefined} rejection status, or undefined when admitted
  */
+/**
+ * Stable machine-readable failure codes served by the panel.
+ *
+ * These strings are part of the HTTP contract: `tests/http.test.js` asserts
+ * them and the browser half branches on them. They live in one object so a
+ * typo becomes a missing key instead of a silently different code the client
+ * cannot recognize.
+ * @type {Readonly<Record<string, string>>}
+ */
+const ERROR_CODES = Object.freeze({
+  METHOD_NOT_ALLOWED: 'method-not-allowed',
+  BAD_URL: 'bad-url',
+  BAD_BODY: 'bad-body',
+  MISSING_FIELD: 'missing-field',
+  NOT_FOUND: 'not-found',
+  DISPATCH_FAILED: 'dispatch-failed',
+  JOBS_UNAVAILABLE: 'jobs-unavailable',
+  JOBS_REFUSED: 'jobs-refused',
+})
+
 function rejectionFor(ctx, req) {
   let connection
   try { connection = ctx.get('connection') } catch { connection = undefined }
@@ -286,7 +306,7 @@ export function registerHttp(webServer, { ctx, io, resolver, registry, config, h
       if (!methods.includes(String(req.method))) {
         const allow = methods.join(', ')
         res.setHeader?.('allow', allow)
-        sendError(res, 405, 'method not allowed; allowed: ' + allow, 'method-not-allowed')
+        sendError(res, 405, 'method not allowed; allowed: ' + allow, ERROR_CODES.METHOD_NOT_ALLOWED)
         return
       }
       try {
@@ -414,20 +434,20 @@ export function registerHttp(webServer, { ctx, io, resolver, registry, config, h
 
   routes.set('/import', route(['POST'], async (req) => {
     const body = await readJson(req)
-    if (body.error !== undefined) throw failure(400, body.error, 'bad-body')
+    if (body.error !== undefined) throw failure(400, body.error, ERROR_CODES.BAD_BODY)
     const provider = String(body.value.provider ?? '')
     const sessionId = String(body.value.sessionId ?? '')
-    if (provider === '' || sessionId === '') throw failure(400, 'provider and sessionId are required', 'missing-field')
+    if (provider === '' || sessionId === '') throw failure(400, 'provider and sessionId are required', ERROR_CODES.MISSING_FIELD)
     const result = await importOne(io ?? ctx, { registry, provider, externalId: sessionId, home })
     return { result }
   }))
 
   routes.set('/dispatch', route(['POST'], async (req) => {
     const body = await readJson(req)
-    if (body.error !== undefined) throw failure(400, body.error, 'bad-body')
+    if (body.error !== undefined) throw failure(400, body.error, ERROR_CODES.BAD_BODY)
     const providerId = String(body.value.provider ?? '')
     const prompt = String(body.value.prompt ?? '')
-    if (providerId === '' || prompt === '') throw failure(400, 'provider and prompt are required', 'missing-field')
+    if (providerId === '' || prompt === '') throw failure(400, 'provider and prompt are required', ERROR_CODES.MISSING_FIELD)
     const backend = backendOf(providerId)
     const startedAt = Date.now()
     try {
@@ -450,15 +470,15 @@ export function registerHttp(webServer, { ctx, io, resolver, registry, config, h
       }
     } catch (error) {
       remember({ at: Date.now(), provider: providerId, prompt: prompt.slice(0, 80), ok: false, error: String(error?.message || error).slice(0, 200) })
-      throw failure(502, String(error?.message || error), 'dispatch-failed')
+      throw failure(502, String(error?.message || error), ERROR_CODES.DISPATCH_FAILED)
     }
   }))
 
   routes.set('/roundtable', route(['POST'], async (req) => {
     const body = await readJson(req)
-    if (body.error !== undefined) throw failure(400, body.error, 'bad-body')
+    if (body.error !== undefined) throw failure(400, body.error, ERROR_CODES.BAD_BODY)
     const prompt = String(body.value.prompt ?? '')
-    if (prompt.trim() === '') throw failure(400, 'prompt is required', 'missing-field')
+    if (prompt.trim() === '') throw failure(400, 'prompt is required', ERROR_CODES.MISSING_FIELD)
     const providerIds = Array.isArray(body.value.providers) ? body.value.providers.map(String) : undefined
     const produce = (signal) => runRoundtable({
       registry,
@@ -509,7 +529,7 @@ export function registerHttp(webServer, { ctx, io, resolver, registry, config, h
           503,
           'background job refused: ' + String(error?.message || error)
             + ' — enable @deepseek-ai/dsh-tool-jobs in this composition, or retry when a job slot is free',
-          'jobs-refused',
+          ERROR_CODES.JOBS_REFUSED,
         )
       }
       return { jobId }
@@ -521,7 +541,7 @@ export function registerHttp(webServer, { ctx, io, resolver, registry, config, h
 
   routes.set('/tasks', route(['GET'], async () => {
     const jobs = jobsOf(ctx)
-    if (jobs === null || typeof jobs.list !== 'function') throw failure(503, 'jobs service unavailable', 'jobs-unavailable')
+    if (jobs === null || typeof jobs.list !== 'function') throw failure(503, 'jobs service unavailable', ERROR_CODES.JOBS_UNAVAILABLE)
     return {
       tasks: jobs.list(undefined)
         .filter((view) => String(view.kind) === JOB_KIND)
@@ -531,10 +551,10 @@ export function registerHttp(webServer, { ctx, io, resolver, registry, config, h
 
   routes.set('/tasks/output', route(['GET'], async (req) => {
     const jobs = jobsOf(ctx)
-    if (jobs === null || typeof jobs.readAt !== 'function') throw failure(503, 'jobs service unavailable', 'jobs-unavailable')
+    if (jobs === null || typeof jobs.readAt !== 'function') throw failure(503, 'jobs service unavailable', ERROR_CODES.JOBS_UNAVAILABLE)
     const url = requestUrl(req)
     const id = String(url.searchParams.get('id') ?? '')
-    if (id === '') throw failure(400, 'id is required', 'missing-field')
+    if (id === '') throw failure(400, 'id is required', ERROR_CODES.MISSING_FIELD)
     let read
     try {
       read = jobs.readAt(id, intParam(url, 'from', 0), undefined)
@@ -551,11 +571,11 @@ export function registerHttp(webServer, { ctx, io, resolver, registry, config, h
 
   routes.set('/tasks/kill', route(['POST'], async (req) => {
     const jobs = jobsOf(ctx)
-    if (jobs === null || typeof jobs.kill !== 'function') throw failure(503, 'jobs service unavailable', 'jobs-unavailable')
+    if (jobs === null || typeof jobs.kill !== 'function') throw failure(503, 'jobs service unavailable', ERROR_CODES.JOBS_UNAVAILABLE)
     const body = await readJson(req)
-    if (body.error !== undefined) throw failure(400, body.error, 'bad-body')
+    if (body.error !== undefined) throw failure(400, body.error, ERROR_CODES.BAD_BODY)
     const id = String(body.value.id ?? '')
-    if (id === '') throw failure(400, 'id is required', 'missing-field')
+    if (id === '') throw failure(400, 'id is required', ERROR_CODES.MISSING_FIELD)
     let outcome
     try {
       outcome = jobs.kill(id, undefined, String(body.value.reason ?? 'panel'))
@@ -579,12 +599,12 @@ export function registerHttp(webServer, { ctx, io, resolver, registry, config, h
       try {
         path = requestUrl(req).pathname.slice(ROUTE_PREFIX.length).replace(/\/+$/, '') || '/'
       } catch (error) {
-        sendError(res, 400, 'invalid request URL: ' + String(error?.message || error), 'bad-url')
+        sendError(res, 400, 'invalid request URL: ' + String(error?.message || error), ERROR_CODES.BAD_URL)
         return
       }
       const handler = routes.get(path)
       if (handler === undefined) {
-        sendError(res, 404, 'unknown route: ' + path, 'not-found')
+        sendError(res, 404, 'unknown route: ' + path, ERROR_CODES.NOT_FOUND)
         return
       }
       await handler(req, res)

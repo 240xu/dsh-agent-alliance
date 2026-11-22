@@ -725,3 +725,18 @@ test('a foreground panel roundtable never touches the jobs service', async () =>
   assert.equal(response.status, 200)
   assert.equal(response.json.jobId, null, 'the foreground path reports no job id')
 })
+
+test('every served failure code is one of the declared ERROR_CODES values', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const source = readFileSync(join(new URL('..', import.meta.url).pathname, 'src/http.js'), 'utf8')
+  // Codes are part of the HTTP contract the browser half branches on. A bare
+  // quoted literal outside the ERROR_CODES object would be a code the client
+  // cannot recognize, so reject any that survive.
+  const declared = source.match(/const ERROR_CODES = Object\.freeze\(\{([\s\S]*?)\}\)/)?.[1] ?? ''
+  const declaredValues = [...declared.matchAll(/'([a-z-]+)'/g)].map((match) => match[1])
+  assert.ok(declaredValues.length >= 8, 'the code table must stay populated')
+  const body = source.replace(declared, '')
+  const strayCodes = [...body.matchAll(/'(method-not-allowed|bad-url|bad-body|missing-field|not-found|dispatch-failed|jobs-unavailable|jobs-refused)'/g)]
+  assert.deepEqual(strayCodes.map((m) => m[1]), [], 'failures must reference ERROR_CODES, not repeat its strings')
+})
