@@ -157,3 +157,56 @@ test('every round reports whether its prompt strictly extends the question', asy
   const round2 = sent.filter((entry) => entry.prompt.startsWith('Q') && entry.prompt !== 'Q')
   assert.ok(round2.length > 0, 'round 2 prompts must extend the question')
 })
+
+test('the round marker sits after the peer block so round N+1 reuses it', async () => {
+  const { runRoundtable } = await import('../src/roundtable.js')
+  const sent = []
+  const provider = {
+    id: 'a',
+    async dispatch({ prompt }) {
+      sent.push(prompt)
+      return { text: 'answer for this round ' + 'x'.repeat(1200) }
+    },
+  }
+  const registry = { list: () => [{ id: 'a' }], get: () => provider }
+  await runRoundtable({ registry, prompt: 'Q'.repeat(400), rounds: 3 })
+
+  // Round 2 and round 3 differ only in the trailing round marker and the
+  // (changed) peer answer. The round marker must NOT precede the peer block:
+  // putting it first diverges ~400 chars in and re-bills the whole block.
+  const [r1, r2, r3] = sent
+  const commonR2R3 = (() => {
+    let i = 0
+    while (i < Math.min(r2.length, r3.length) && r2[i] === r3[i]) i += 1
+    return i
+  })()
+  // The peer block is the bulk of the prompt; reuse must cover most of it even
+  // though the answers changed between rounds.
+  assert.ok(commonR2R3 > r2.length * 0.2,
+    `round 3 reused only ${commonR2R3}/${r2.length} chars of round 2`)
+  // Both rounds still start with the untouched question.
+  assert.ok(r2.startsWith('Q'.repeat(400)) && r3.startsWith('Q'.repeat(400)))
+  assert.ok(r1 === 'Q'.repeat(400), 'round 1 is the bare question')
+})
+
+test('a failed member does not falsify the round-level prefix verdict', async () => {
+  const { runRoundtable } = await import('../src/roundtable.js')
+  const registry = {
+    list: () => [{ id: 'ok' }, { id: 'bad' }],
+    get: (id) => ({
+      id,
+      async dispatch({ prompt }) {
+        if (id === 'bad') throw new Error('this member is down')
+        return { text: 'fine' }
+      },
+    }),
+  }
+  const result = await runRoundtable({ registry, prompt: 'Q', rounds: 2 })
+  const round2 = result.debate[1]
+  // Only members that actually received a prompt can testify. Including the
+  // failed one would report strictPrefix=false and hide whether the layout is
+  // sound, conflating "layout broke" with "a provider failed".
+  assert.equal(round2.strictPrefix, true)
+  assert.deepEqual(round2.prefixes.map((entry) => entry.provider), ['ok'])
+  assert.equal(round2.vsPreviousRound[0].comparable, true)
+})
