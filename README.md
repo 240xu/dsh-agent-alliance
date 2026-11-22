@@ -186,10 +186,28 @@ DeepSeek Harness **扩展插件**：把 **Claude Code / Codex / OpenCode / ZCode
 声明不出任何父进程能力）、`inheritsParentContext` 为 false。
 **判据是那个 CLI 是否讲 ACP 协议**，不是它的牌子。
 
-> 已核实的边界：`opencode-ai@1.19.6` 的 npm metadata 无 ACP 相关声明，
-> 本机安装实测超时（无法跑 `--help` 确认是否有 `acp` 子命令）。
-> 因此本文不声称 opencode/zcode 支持 ACP——**这是需要实测才能下的结论**。
-> 支持则走上面的官方通道；不支持则本插件的 CLI 包装层是唯一路径。
+**实测结论（2026-11-22）**：
+
+| agent | 支持 ACP？ | 证据 |
+|---|---|---|
+| **opencode 1.19.6** | **是** | `opencode acp` 是 stdio JSON-RPC 服务；实测 `initialize` → `session/new` → `session/prompt` 完整往返，收到流式回答与 `stopReason: end_turn` |
+| zcode | **无法验证** | npm 上的 `zcode@0.0.1` 是无 bin 的空壳包（`description: "This is a nice project"`），非官方产物 |
+
+所以 opencode 可以走上面的官方通道：
+
+```yaml
+- id: subagent-acp
+  name: '@deepseek-ai/dsh-subagent-acp'
+  config:
+    providerName: 'opencode'
+    command: '/absolute/path/to/opencode-ai/bin/opencode.exe'
+    args: ['acp']
+```
+
+**但两条路是并存而非二选一**，因为官方 ACP provider 的能力边界是：
+`agentOptions:false`（不能指定 model）、`outputSchema:false`、`inheritsParentContext:false`
+（不继承父上下文、一次性、不能续聊）。本插件的 CLI 包装层补齐的正是这些：
+`resumeSessionId`、`model` 覆盖、以及会话历史浏览与导入。
 - `zcode` 走 `commandTemplate` 模板（`{prompt}` `{session}` `{cwd}`，单引号安全转义）
 - `maxConcurrent` 限制同时派发到外部 agent 的在飞数量；排队期间取消立即出队
 - 各家探测（**仅 CLI 路径**）：claude 经 grun；codex 绝对 node 入口；opencode 强制 TMPDIR 归一；
