@@ -93,3 +93,80 @@ cd /tmp/t3 && timeout 150 node load.mjs
 ```
 
 <!-- APPEND: plan write test -->
+
+## 2. plan 模式是否真拦写入 —— **确定结论：拦住了**（推翻 C5）
+
+### 2.1 关键前提：C5 的 mode 从未切换成功
+
+C5 用的是 `session/select_config_option`，服务端返回 `-32601 Method not found`。
+也就是说 C5 那两次"实测"（build/plan）**跑的都是 build 模式**，所以"plan 也不拦写入"
+只是"build 写入"被贴了两次标签。**C5 的这条结论作废。**
+
+### 2.2 本次实验设计（保证 mode 真的切了）
+
+每次写入前做三件事，缺一不可：
+
+1. `session/set_config_option {configId:'mode', value:MODE}`
+2. **独立读回** `session/load` → 取 `configOptions[mode].currentValue`
+3. 断言读回值 == 请求值，才继续；否则该轮作废
+
+### 2.3 实测结果
+
+```
+$ node buildvsplan.mjs
+=== BUILD | requested=build CONFIRMED=build ===
+stopReason: end_turn
+updates: agent_thought_chunk,tool_call,tool_call_update,tool_call_update,agent_message_chunk,usage_update
+FILE WRITTEN: true "BUILD"
+
+=== PLAN | requested=plan CONFIRMED=plan ===
+stopReason: end_turn
+updates: available_commands_update,agent_thought_chunk × N,agent_message_chunk × 2,usage_update
+FILE WRITTEN: false
+
+mode at very end: plan
+```
+
+磁盘核对：
+
+```bash
+$ ls /tmp/t3/ws4/
+BUILD.txt          # 只有 build 的那一个
+$ test -f /tmp/t3/ws4/PLAN.txt && echo YES || echo NO
+NO — plan mode blocked the write
+```
+
+### 2.4 差异是**结构性**的，不是运气
+
+不只是"文件没写成"，**工具调用序列本身不同**：
+
+| 模式 | 出现的 update 类型 | 有没有 `tool_call` |
+|---|---|---|
+| build | `agent_thought_chunk, tool_call, tool_call_update, agent_message_chunk, usage_update` | ✅ 有 |
+| plan | `agent_thought_chunk × N, agent_message_chunk, usage_update` | ❌ **完全没有** |
+
+⇒ plan 模式下模型**根本没有调用写入工具**。而且是模型自己在推理中引用了 plan 约束：
+
+> "System-reminder says plan mode: do not modify any other files..."
+
+即 opencode 通过 **system-reminder 注入**把 plan 约束送到模型，模型据此放弃了写入。
+这和 v2 的 plan 描述一致：**"Read-only agent for exploring the codebase and planning work"**。
+
+### 2.5 但要注意一个**边界**（不要过度归纳）
+
+本实验只证明了：**模型会遵守注入的 plan 约束，不调用写入工具**。
+它**没有**证明服务端会硬性拒绝一次写操作。区分很重要：
+
+- 若模型**无视** system-reminder 强行发 tool_call，服务端是否拒绝？——**本次未测**。
+- 对"模型驱动的 agent"这个用例，这个区别影响不大（模型遵守即可）；
+- 但若要把 plan 当作**安全边界**（对抗恶意/越狱 prompt），必须另测服务端强制。
+  本报告**不**声称 plan 是一道安全边界。
+
+### 2.6 顺带修正 C5 引用的描述文本
+
+C5 写的是 opencode 把 plan 描述为 "Disallows all edit tools"。
+**v2 2.3.2 实际描述**是："Read-only agent for exploring the codebase and planning work before
+implementation." —— 措辞不同，而且"read-only agent"是**角色描述**，不是"硬拒绝工具"的承诺。
+这进一步说明 §2.5 的边界区分是必要的。
+
+<!-- APPEND: v2 caps -->

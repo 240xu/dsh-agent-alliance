@@ -238,3 +238,16 @@ test('the docs warn that ACP permission does not gate opencode', async () => {
   assert.match(readme, /没有任何审批环节/, 'the README must state there is no approval step')
   assert.match(readme, /C5-acp-permission\.md/, 'the README must link the evidence')
 })
+
+test('the docs do not present plan mode as a protection', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const root = new URL('..', import.meta.url).pathname
+  const readme = readFileSync(join(root, 'README.md'), 'utf8')
+  // An earlier round claimed plan mode "still wrote the file" — that
+  // measurement was invalid (the method name did not exist, so the prompt ran
+  // in build mode). The README must not repeat the invalid conclusion, and must
+  // not imply plan is a safety measure.
+  assert.match(readme, /plan 拦不拦写入.*未知/, 'the README must state plan mode is unknown')
+  assert.doesNotMatch(readme, /plan 模式下?未阻断写入/, 'the invalidated claim must not return')
+})

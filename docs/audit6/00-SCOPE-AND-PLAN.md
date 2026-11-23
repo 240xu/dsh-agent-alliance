@@ -4,6 +4,9 @@
 **运行时权威：** `/opt/dsh-0222/node_modules/@deepseek-ai/` = **`0.2.2-rc.5`**
 （`/opt/dsh-0222/package.json` → `"@deepseek-ai/dsh": "0.2.2-rc.5"`）
 
+**基线实测（本轮）：** `node --test tests/*.test.js` → **262 pass / 0 fail**
+（4.2s）。runtime 版本实测：`/opt/dsh-0222/package.json` → `0.2.2-rc.5`。
+
 **这是规划文档，不是执行文档。** 它界定「什么算官方化对齐」「什么不算」，给出
 精简候选与优先级，并明确列出**不该做**的事。全部判定都带官方 `path:line` 或实测输出。
 
@@ -501,4 +504,125 @@ if (this.providers.has(name)) throw new SubagentError(
 
 ## E. 验收标准
 
-*(逐项填写中)*
+原则：**「看起来对齐」不算对齐。** 每项给出「能反证自己的证据」——
+一个在没有真正对齐时会失败的检查，而不是一个在写完后必然为真的断言。
+
+### E1. A5（`ctx.get` 注释修正）
+
+**反证检查：** 用一个**未注入**的服务名跑真实 Cordis context，断言
+`ctx.get(name) === undefined` 且不抛错。
+
+```js
+// 必须能在 rc.5 上通过；注释若写「会抛错」，这条就与该注释矛盾
+await root.plugin({ name:'p', inject:['tools'], apply(ctx) {
+  assert.equal(ctx.get('jobs'), undefined)            // 不抛
+  assert.throws(() => ctx.jobs?)                       // 属性读才抛（语法示意，用 try/catch）
+}})
+```
+
+**判定：** 注释里出现的每一个行为断言，都必须有一条对应测试或在注释中引用实测输出。
+本仓库当前**没有**这条测试 → 建议随注释修正一起补 `tests/host.test.js`。
+
+### E2. A3（面板 inject 收紧）
+
+**反证检查：** 两个 composition 各跑一次。
+
+| composition | 期望 |
+| --- | --- |
+| 挂 `webServer` + `connection` | 面板注册成功，`/state` 200 |
+| 只挂 `webServer`（无 `connection`） | **面板根本不注册**（`ctx.inject` 未满足），而不是注册后 503 |
+
+第二条是关键：现在的实现是「注册了但每个请求 503」，收紧后应该是「不注册」。
+**证据形式：** 断言 `webServer` 上不存在 `/__agent-alliance` 前缀路由。
+
+### E3. P0-3（`detectAll` 取消）
+
+**反证检查：** 注入一个永不 settle 的 `detect()`，`budgetMs: 100`，
+断言**进程能在 500ms 内自然退出**（orphan 不再持有 event loop）。
+
+audit3-C2 实测的失败形态是：
+```
+PROCESS EXITED at 3154 ms after detectAll returned   // 预算 100ms，关停延迟 3s
+```
+对齐后的期望：`PROCESS EXITED at < 500 ms`。**这条必须是真的计时断言，不能只看返回值。**
+
+### E4. A4（降级 warn + coverage）
+
+**反证检查：** 两张表驱动测试。
+
+1. `ctx.subprocess` 存在 → 断言 `spawnCliViaSeam` 被调用、raw `spawnCli` **零调用**。
+2. `ctx.subprocess` 缺失 → 断言 raw `spawnCli` 被调用**且** `ctx.logger.warn` 收到一次降级消息。
+
+只测 (1) 不够——那证明不了降级路径有提示。
+
+### E5. A6（诊断）
+
+**反证检查：** 构造 4097 字节与含多字节字符的诊断，断言：
+
+- `Buffer.byteLength(out) <= 4096`；
+- 末尾是 `[diagnostic truncated]`；
+- **解码后不含替换字符 U+FFFD**（证明没有劈开多字节序列）。
+
+`diagnostic.test.js` 已存在；核对它是否覆盖「恰好截在多字节中间」这一例。
+（audit 未验证该用例是否存在——执行阶段第一步应确认。）
+
+### E6. B1/B2（精简）
+
+**反证检查：** 精简类改动的验收**不是行数**，而是：
+
+1. `node --test tests/*.test.js` 全绿（262 基线不降）；
+2. **工具/路由的对外形状零变化**：
+   - 六工具的 `name`/`parameters` JSON **逐字节**不变（可 snapshot 断言）；
+   - 六个 HTTP 路由的 `{ok, code}` 响应**同形**（可用现有 `http.test.js` 断言加强）；
+3. `git diff --stat` 只减不增（除测试补充）。
+
+**只报「少了多少行」是无效验收。**
+
+### E7. D 节（不做项）的守护
+
+**反证检查：** D1–D6 每一条都应有一条**失败即报警**的测试，防止后来者「顺手官方化」：
+
+| 项 | 守护测试 |
+| --- | --- |
+| D1 不注册 provider | 断言插件激活 `apply()` 执行后 `ctx.subagents.list()` 不含我们新增的名字 |
+| D2 不改 delivery | 断言 `backend.js` 源码里 `delivery: 'caller'` 存在（或行为测试：一次 dispatch 只产生一条 tool result，无重复 settle 通知） |
+| D3 不删 agent_dispatch | `tools.test.js` 已覆盖六工具注册；再加一条「`official-coverage` 有 officialPath 的 provider 默认 `dispatch: false`」 |
+| D4 不拆 client | `manifest-guard.test.js` 已钉 `exports['./client']` 指向单文件 |
+| D5 不引 defineTool | `package.json` 断言 `dependencies` 为空/不存在 |
+| D6 不改信封 | `http.test.js` 断言每个路由 `payload.ok === true` |
+
+### E8. 全局回归门
+
+任何一项合并前：
+
+```
+node --test tests/*.test.js        # 262 基线，不得下降
+git diff --stat                    # 确认只动了目标文件
+```
+
+**不接受**「本地跑过」而无输出。验收证据必须贴出实际命令与结果行。
+
+---
+
+## 附：本轮的诚实边界
+
+- **未做的验证：** `diagnostic.test.js` 是否覆盖「截断劈开多字节」这一具体用例（E5），
+  以及 `official-coverage.test.js` 是否覆盖 `ready` 的每种组合 —— 这两项留给执行阶段第一步。
+- **已观察且已证明不影响的 rc.5 变化：** rc.5 把工具**执行**拆成独立
+  `ToolExecutor` seam（`dsh-tools/lib/types/executor.d.ts`，
+  `TOOL_EXECUTOR_UNAVAILABLE`）。我们是纯注册方，**从不调用 `tools.execute`**：
+
+  ```
+  $ grep -rn "tools.execute|TOOL_RUNTIME_SCHEDULER|executor" src/ index.js
+  (无输出)
+  ```
+
+  且 `ToolsService.register`（`dsh-tools/lib/types/index.d.ts:50`）在 rc.5 实测注册成功。
+  所以本次拆分对我们零影响。**登记为「已观察、不影响当前代码」**，不列入计划；
+  若将来要做 PTC / 自定义 executor，那才是新入口。
+- **未安装的包：** `dsh-subagent-codex` / `-claude-code` 在本机 `/opt/dsh-0222` 中
+  **不存在**（`ls | grep subagent` 只有 `dsh-subagent`、`-fork-in-process`、
+  `-spawn-in-process`、`tool-subagent`、`tool-subagent-control`）。
+  因此 A6 对官方 provider 实现的引用来自源码 checkout，不是本机运行时。
+  `official-coverage.js` 声称的 `subagent_codex` / `subagent_claude_code` 是
+  「启用 bundle 后才会出现」，与安装现状一致。

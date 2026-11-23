@@ -235,7 +235,8 @@ DeepSeek Harness **扩展插件**：把 **Claude Code / Codex / OpenCode / ZCode
 
 > ⚠️ **`permission` 对 opencode 无效**。官方 `subagent-acp` 的 `permission: 'allow'|'reject'`
 > 只在子 agent 主动发 `session/requestPermission` 时起作用，而 opencode **一次都不发**
-> （实测 build / plan 两种模式下都是 0 个请求，文件照样写出来）。
+> （实测 **build 模式下 0 个权限请求**，文件照样写出来；plan 模式那次实验因 method 名写错而未生效，
+> 所以「plan 拦不拦写入」目前未知，不要把 plan 当保护手段）。
 > 所以把 opencode 接进官方 ACP 时，**它会在 cwd 里读写文件且没有任何审批环节**。
 > 详见 [docs/audit5/C5-acp-permission.md](docs/audit5/C5-acp-permission.md)。
 

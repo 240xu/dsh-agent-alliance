@@ -1,7 +1,10 @@
 # C5：ACP permission 策略实测 —— opencode 根本不发权限请求
 
 > 实测时间：2026-11-23
-> **结论：官方 `subagent-acp` 的 `permission: 'allow'|'reject'` 对 opencode 完全无效，因为 opencode 从不发 `session/requestPermission`。**
+> 修订：2026-11-23（T3 审计发现本文 §3.2 的 mode 结论建立在一个**不存在的 method 名**上，已作废）
+>
+> **有效结论：官方 `subagent-acp` 的 `permission: 'allow'|'reject'` 对 opencode 完全无效，因为 opencode 从不发 `session/request_permission`。**
+> **已作废结论：「plan 模式仍写入」→ 那次测的其实是 build 模式，见文末「修订」。**
 
 ## 一、官方 ACP provider 的权限机制（源码为准）
 
@@ -47,16 +50,25 @@ mode=plan  → /tmp/acp-mode-plan.txt  内容 "MODE_plan"
 在 `docs/audit5/C4-acp-feasibility.md` 的配置块里，我写过 `permission: 'allow'  # 或 'reject'，看你要不要让它改文件`。
 **这句话需要更正**：那个开关对 opencode 无效。
 
-### 2. `mode: 'plan'` 也没有阻断写入
+### 2. ~~`mode: 'plan'` 也没有阻断写入~~ —— **此结论已作废**
 
-opencode 自己把 `plan` 模式描述为 "Plan mode. Disallows all edit tools."（见 `session/new` 的
-`configOptions.mode.options[1].description`），但实测它仍然写出了文件。
+我原来写的是"plan 模式实测仍写出了文件"。**那次实验是无效的**：
 
-可能原因（未逐一验证）：
-- `session/select_config_option` 的调用方式可能不对（我用了 `configId:'mode'`，若字段名不同则静默未生效）
-- 或 `plan` 只约束它自己的内置 edit 工具，不约束 `bash`/`write` 之类的直接写文件路径
+我用的 method 名 `session/select_config_option` **根本不存在**，服务端返回
+`{"error":{"code":-32601,"message":"Method not found"}}`，而我在 `.catch()` 里只打印了
+错误就继续跑 prompt —— 所以**整个 prompt 是在 build 模式下执行的**，plan 从未生效。
 
-**我没有进一步验证 mode 是否真的切换了**——这一点必须诚实标注：如果
+T3 审计（`docs/audit6/T3-acp-unverified.md`）查出了正确调用方式并证明了它生效：
+
+```js
+session/set_config_option { sessionId, configId: 'mode', value: 'plan' }   // ✅
+session/select_config_option                                                // ❌ 不存在
+```
+
+并且它用**独立读回**（`session/load` 重新读会话状态）证明切换持久化，而不是只看 set 的响应
+（那个响应会滞后一拍）。
+
+**所以「plan 是否拦写入」目前是未知的，不是已知的不拦。**
 
 ## 四、给用户的诚实结论
 
@@ -64,7 +76,7 @@ opencode 自己把 `plan` 模式描述为 "Plan mode. Disallows all edit tools."
 |---|---|
 | `permission: 'reject'`（官方默认） | **无效**（0 个权限请求） |
 | `permission: 'allow'` | 无意义（没有请求需要允许） |
-| `mode: 'plan'` | **实测未阻断写入**（但 mode 是否真的切过去了未确认） |
+| `mode: 'plan'` | **未知**——原先"未阻断"的实测是无效的（method 名不存在，实际跑在 build 模式） |
 
 ⇒ **把 opencode 接进官方 `subagent-acp` 时，它会在 cwd 里读写文件且没有任何审批环节。**
 这跟官方 codex 的 `never` 模式（有原生沙箱）和 claude 的 `dontAsk`（拒绝未授权）都不同。
@@ -85,3 +97,17 @@ opencode 自己把 `plan` 模式描述为 "Plan mode. Disallows all edit tools."
 1. `session/select_config_option` 的正确调用方式（mode 到底切没切）
 2. opencode 是否有别的开关能真正禁用写文件（例如 `--pure` 或配置项）
 3. v2 的 `additionalDirectories`/`delete`/`steering` 声明与实际行为（C4 里也只核对了声明）
+
+## 修订（2026-11-23）
+
+T3 审计推翻了本文的一条结论，记录在此以免误导后续读者：
+
+- **作废**："`mode: 'plan'` 实测仍未阻断写入"
+- **真因**：`session/select_config_option` 是我编造的 method 名，服务端 `Method not found`，
+  而错误被 `.catch()` 吞掉，prompt 在 build 模式下跑完
+- **正确做法**：`session/set_config_option { sessionId, configId, value }`，
+  并用独立读回（`session/load`）而非 set 响应来验证状态
+- **仍未知**：plan 模式到底拦不拦写入
+
+保留这条修订而不删掉原文，是因为"用一个不存在的 method 名然后宣布结论"这种错误，
+比结论本身更值得被记住。
