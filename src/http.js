@@ -401,10 +401,14 @@ export function registerHttp(webServer, { ctx, io, resolver, registry, config, h
     const ledger = loadLedger(home)
     const sessions = []
     const targets = providerId ? [providerId] : registry.list().map((provider) => provider.id)
+    const failed = []
+    const scanned = []
     for (const id of targets) {
       try {
         const provider = registry.get(id)
-        for (const session of await provider.listSessions({ query, limit })) {
+        const rows = await provider.listSessions({ query, limit })
+        scanned.push(id)
+        for (const session of rows) {
           sessions.push({
             provider: id,
             id: String(session.id),
@@ -416,11 +420,30 @@ export function registerHttp(webServer, { ctx, io, resolver, registry, config, h
         }
       } catch (error) {
         // A broken provider must not blank the whole listing; the row set from the
-        // other providers is still useful, so record the failure instead.
+        // other providers is still useful. It must, however, be VISIBLE: a caller
+        // that sees 3 rows from 2 providers cannot tell whether the third provider
+        // genuinely has no sessions or simply failed to scan, and would wrongly
+        // conclude its history is empty.
+        failed.push({ provider: id, reason: String(error?.message || error).slice(0, 200) })
         ctx.logger?.warn?.('agent-alliance: session listing failed for provider ' + id + ': ' + String(error?.message || error))
       }
     }
-    return { total: sessions.length, sessions }
+    // Newest first across providers: every provider returns its own rows in its
+    // own order, so an unsorted merge made "recent sessions" meaningless as soon
+    // as more than one provider had history. Rows without a timestamp keep their
+    // provider order at the end rather than jumping to the front.
+    sessions.sort((a, b) => {
+      if (a.createdAt === null && b.createdAt === null) return 0
+      if (a.createdAt === null) return 1
+      if (b.createdAt === null) return -1
+      return Number(b.createdAt) - Number(a.createdAt)
+    })
+    return {
+      total: sessions.length,
+      sessions,
+      scanned,
+      ...(failed.length === 0 ? {} : { failed }),
+    }
   }))
 
   routes.set('/session-content', route(['GET'], async (req) => {

@@ -740,3 +740,47 @@ test('every served failure code is one of the declared ERROR_CODES values', asyn
   const strayCodes = [...body.matchAll(/'(method-not-allowed|bad-url|bad-body|missing-field|not-found|dispatch-failed|jobs-unavailable|jobs-refused)'/g)]
   assert.deepEqual(strayCodes.map((m) => m[1]), [], 'failures must reference ERROR_CODES, not repeat its strings')
 })
+
+test('session rows are sorted newest-first across providers, not per provider', async () => {
+  const { webServer, routes } = mockWebServer()
+  const providers = [
+    fakeProvider({ id: 'p1', listSessions: async () => [
+      { id: 'old', title: 'OLD', createdAt: 100 },
+      { id: 'mid', title: 'MID', createdAt: 300 },
+    ] }),
+    fakeProvider({ id: 'p2', listSessions: async () => [
+      { id: 'new', title: 'NEW', createdAt: 900 },
+      { id: 'none', title: 'NO-TS', createdAt: null },
+    ] }),
+  ]
+  registerHttp(webServer, options({ providers }))
+  const response = await request(routes, 'GET', ROUTE_PREFIX + '/sessions')
+
+  // Each provider returns its own order; an unsorted merge made "recent
+  // sessions" meaningless with more than one provider's history.
+  assert.deepEqual(
+    response.json.sessions.map((s) => s.id),
+    ['new', 'mid', 'old', 'none'],
+    'rows must be ordered by createdAt across providers, with nulls last',
+  )
+})
+
+test('a provider that cannot be scanned is reported instead of looking empty', async () => {
+  const { webServer, routes } = mockWebServer()
+  const providers = [
+    fakeProvider({ id: 'good', listSessions: async () => [{ id: 's1', title: 'T', createdAt: 1 }] }),
+    fakeProvider({ id: 'broken', listSessions: async () => { throw new Error('session store unreadable') } }),
+  ]
+  registerHttp(webServer, options({ providers }))
+  const response = await request(routes, 'GET', ROUTE_PREFIX + '/sessions')
+
+  // Without this a caller sees one row and cannot tell whether the other
+  // provider has no sessions or failed to scan — and would conclude its history
+  // is empty.
+  assert.deepEqual(response.json.scanned, ['good'])
+  assert.equal(response.json.failed.length, 1)
+  assert.equal(response.json.failed[0].provider, 'broken')
+  assert.match(String(response.json.failed[0].reason), /unreadable/)
+  // The healthy provider's row still comes back.
+  assert.equal(response.json.sessions.length, 1)
+})
