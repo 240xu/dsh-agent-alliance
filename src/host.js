@@ -1,11 +1,14 @@
 /**
  * Host-service access shared by every module of the plugin.
  *
- * `ctx.get(name)` answers for a registered service, but it throws for a name
- * outside this plugin's injected set, and a bare `ctx[name]` read throws for an
- * uninjected service too ("cannot get property ... without inject"). Both are
- * expected while the composition is still assembling, so every optional service
- * goes through this one resolver instead of seven hand-rolled copies.
+ * Both access forms are expected to answer `undefined` for an absent service —
+ * measured on 0.2.2-rc.5: `ctx.get('nonexistent')` returns undefined, and so
+ * does a bare `ctx.nonexistent` read. The "cannot get property ... without
+ * inject" error in `cordis/lib/index.js` fires only when the name IS in a fiber's
+ * `inject` list and that fiber is not yet active, which is a load-ordering
+ * fault rather than an optional-service probe. Treating both forms as throwing
+ * would invite a future editor to keep a catch that can never run — the exact
+ * mistake this resolver's earlier copy made.
  * @module dsh-agent-alliance/host
  */
 
@@ -28,12 +31,18 @@ export function serviceOf(ctx, name) {
       const resolved = ctx.get(name)
       if (resolved !== undefined) return resolved
     } catch {
-      // `get` throws for a service outside the injected set: treat as absent.
+      // `cordis` throws "cannot get required service ... in inactive context"
+      // when the name IS in a fiber's inject list but that fiber has not
+      // activated yet (`lib/index.js:1269-1271`). That is a load-ordering fault,
+      // not an absent optional service, but a caller probing an optional
+      // service should still not fail on it — hence the guard rather than a
+      // deleted catch.
     }
   }
   try {
     return ctx[name]
   } catch {
+    // Same inactive-context case, reached through the bare-property form.
     return undefined
   }
 }

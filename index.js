@@ -23,7 +23,8 @@ export const name = 'agent-alliance'
 /**
  * Services the plugin requires. Every other service (`jobs`, `webServer`,
  * `connection`, `sessionPersistence`, …) is optional and read through
- * `ctx.get(name)`; a bare property read of a non-injected service throws.
+ * `ctx.get(name)`, which answers `undefined` when absent — see src/host.js for
+ * the measured behaviour behind that claim.
  */
 export const inject = ['tools']
 

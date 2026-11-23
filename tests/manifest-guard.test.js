@@ -251,3 +251,24 @@ test('the docs do not present plan mode as a protection', async () => {
   assert.match(readme, /plan 拦不拦写入.*未知/, 'the README must state plan mode is unknown')
   assert.doesNotMatch(readme, /plan 模式下?未阻断写入/, 'the invalidated claim must not return')
 })
+
+test('the docs do not claim ctx.get throws for an absent service', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const root = new URL('..', import.meta.url).pathname
+  // Measured on 0.2.2-rc.5: ctx.get('nonexistent') returns undefined, and a
+  // bare ctx.nonexistent read does too. The only throw is "cannot get required
+  // service ... in inactive context", which needs the name in a fiber's inject
+  // list. A comment claiming the general case throws invites a future editor to
+  // keep or add a catch that never runs.
+  for (const file of ['src/host.js', 'index.js']) {
+    const source = readFileSync(join(root, file), 'utf8')
+    assert.doesNotMatch(
+      source,
+      /it throws for a name outside this plugin's injected set/,
+      file + ' must not repeat the retracted claim',
+    )
+  }
+  const host = readFileSync(join(root, 'src/host.js'), 'utf8')
+  assert.match(host, /inactive context/, 'host.js must name the real trigger')
+})
