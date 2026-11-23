@@ -664,6 +664,11 @@ export function registerTools(ctx, { resolver, registry, config, home, io }) {
       const ledger = loadLedger(home)
       const wanted = args.provider ? [String(args.provider)] : registry.list().map((provider) => provider.id)
       const sessions = []
+      // Same distinction the panel route makes: an unscannable provider must
+      // not look like a provider with no history, or the model concludes the
+      // user has nothing to import.
+      const scanned = []
+      const failed = []
       for (const id of wanted) {
         try {
           const provider = registry.get(id)
@@ -671,6 +676,7 @@ export function registerTools(ctx, { resolver, registry, config, home, io }) {
             query: args.query || undefined,
             limit: Number(args.limit) || 20,
           })
+          scanned.push(id)
           for (const session of listed) {
             sessions.push({
               provider: id,
@@ -682,10 +688,23 @@ export function registerTools(ctx, { resolver, registry, config, home, io }) {
             })
           }
         } catch (error) {
+          failed.push({ provider: id, reason: String(error?.message || error).slice(0, 200) })
           ctx.logger?.warn?.('agent-alliance: agent_import_scan failed for provider ' + id + ': ' + String(error?.message || error))
         }
       }
-      return lossless({ total: sessions.length, sessions })
+      // Newest first across providers, matching the panel route.
+      sessions.sort((a, b) => {
+        if (a.createdAt === null && b.createdAt === null) return 0
+        if (a.createdAt === null) return 1
+        if (b.createdAt === null) return -1
+        return Number(b.createdAt) - Number(a.createdAt)
+      })
+      return lossless({
+        total: sessions.length,
+        sessions,
+        scanned,
+        ...(failed.length === 0 ? {} : { failed }),
+      })
     },
   })))
 

@@ -797,3 +797,32 @@ test('the dispatch description tells the model which providers official already 
   // And it must not have lost the in-harness guidance.
   assert.match(description, /subagent_fork/)
 })
+
+test('import_scan reports unscannable providers and sorts across them', async () => {
+  const { registerTools } = await import('../src/tools.js')
+  const tools = []
+  const providers = {
+    good: { id: 'good', async listSessions() { return [{ id: 'a', title: 'A', createdAt: 10 }, { id: 'b', title: 'B', createdAt: 90 }] } },
+    broken: { id: 'broken', async listSessions() { throw new Error('db locked') } },
+  }
+  const registry = {
+    list: () => [{ id: 'good' }, { id: 'broken' }],
+    get: (id) => providers[id],
+  }
+  registerTools(
+    { tools: { register: (def) => { tools.push(def); return () => {} } }, get: () => undefined },
+    { resolver: { resolve: () => ({}), list: () => [] }, registry,
+      config: { defaults: { timeoutMs: 1000, maxConcurrent: 1 } }, home: '/tmp' },
+  )
+  const scan = tools.find((t) => t.name === 'agent_import_scan')
+  const value = await scan.execute({}, {})
+
+  // A model reading only `sessions` cannot tell an empty provider from a
+  // broken one, and would tell the user there is nothing to import.
+  assert.deepEqual(value.scanned, ['good'])
+  assert.equal(value.failed.length, 1)
+  assert.equal(value.failed[0].provider, 'broken')
+  assert.match(String(value.failed[0].reason), /db locked/)
+  // And the rows are ordered newest-first across providers.
+  assert.deepEqual(value.sessions.map((s) => s.id), ['b', 'a'])
+})
