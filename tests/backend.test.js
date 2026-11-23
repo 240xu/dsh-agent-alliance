@@ -473,3 +473,56 @@ test('a provider diagnostic is capped at the official 4096 UTF-8 bytes', async (
     },
   )
 })
+
+test('dispatch:false refuses delegation but keeps the provider registered for history', async () => {
+  const { createBackendResolver } = await import('../src/backend.js')
+  const { createRegistry, defineProvider } = await import('../src/provider/types.js')
+  const listCalls = []
+  const provider = defineProvider({
+    id: 'codex',
+    label: 'Codex CLI',
+    async dispatch() { return { text: 'cli answer' } },
+    async listSessions() { listCalls.push(true); return [] },
+  })
+  const registry = createRegistry([provider])
+  const resolver = createBackendResolver({
+    ctx: { get: () => undefined },
+    registry,
+    config: { providers: { codex: { enabled: true, dispatch: false } }, defaults: {} },
+  })
+
+  // Delegation is refused, with guidance rather than a bare error.
+  // resolve() throws synchronously (the decision is made at resolution), so the
+  // thunk must be async for assert.rejects to see a rejection rather than a
+  // synchronous throw escaping the assertion.
+  await assert.rejects(
+    async () => { await resolver.resolve({ provider: 'codex' }).dispatch({ prompt: 'x' }) },
+    (error) => {
+      assert.equal(error.code, 'dispatch-disabled')
+      assert.match(String(error.message), /subagent_codex/, 'the refusal must point at the official tool')
+      assert.match(String(error.message), /dispatch = true/, 'the refusal must say how to override')
+      return true
+    },
+  )
+
+  // The provider is still there — history browsing is a capability the official
+  // seam does not provide, so de-duplication must not remove it.
+  assert.ok(registry.get('codex') !== undefined)
+  await registry.get('codex').listSessions({})
+  assert.deepEqual(listCalls, [true])
+})
+
+test('dispatch:true keeps the wrapper as the delegation path', async () => {
+  const { createBackendResolver } = await import('../src/backend.js')
+  const { createRegistry, defineProvider } = await import('../src/provider/types.js')
+  const registry = createRegistry([defineProvider({
+    id: 'zcode', label: 'ZCode', async dispatch() { return { text: 'ok' } },
+  })])
+  const resolver = createBackendResolver({
+    ctx: { get: () => undefined },
+    registry,
+    config: { providers: { zcode: { enabled: true, dispatch: true } }, defaults: {} },
+  })
+  const result = await resolver.resolve({ provider: 'zcode' }).dispatch({ prompt: 'x' })
+  assert.equal(result.text, 'ok')
+})

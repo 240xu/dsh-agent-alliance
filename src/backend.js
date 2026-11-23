@@ -115,6 +115,24 @@ function cliLookup(registry, providerId) {
 }
 
 // resolve() 用：未知 id 必须抛与 registry.get 相同的 `unknown provider: <id>`。
+/**
+ * Whether this plugin may still act as the delegation target for an agent.
+ *
+ * `dispatch: false` means the official distribution already offers a better
+ * delegation path (see src/official-coverage.js) and this plugin should stop
+ * competing for it — while still serving history browsing and import, which the
+ * official seam does not provide. Only the delegation entry points consult this;
+ * the registry keeps the provider so `agent_sessions` and `agent_import` work.
+ * @param {object} config resolved configuration
+ * @param {string} providerId external agent id
+ * @returns {boolean} true when this plugin may dispatch to that agent
+ */
+function dispatchAllowed(config, providerId) {
+  const entry = isObject(config) && isObject(config.providers) ? config.providers[providerId] : undefined
+  if (!isObject(entry)) return true
+  return entry.dispatch !== false
+}
+
 function cliOrThrow(registry, providerId) {
   const lookup = cliLookup(registry, providerId)
   if (lookup.found) return lookup.provider
@@ -389,6 +407,20 @@ export function createBackendResolver({ ctx, registry, config } = {}) {
         label: backendLabel(cli.found ? cli.provider : undefined, providerId),
         parent: request.parent,
       })
+    }
+    // Refuse HERE rather than at construction: the provider must stay
+    // registered so history browsing and import keep working for an agent this
+    // plugin no longer dispatches to.
+    if (!dispatchAllowed(config, providerId)) {
+      const other = officialPreference(providerId)
+      const error = new Error(
+        'this plugin no longer dispatches to "' + providerId + '" by default'
+        + ' (providers.' + providerId + '.dispatch = false)'
+        + (other === undefined ? '' : '; ' + other)
+        + '. Set providers.' + providerId + '.dispatch = true to override.',
+      )
+      error.code = 'dispatch-disabled'
+      throw error
     }
     return cliBackend(providerId, cliOrThrow(registry, providerId))
   }

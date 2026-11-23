@@ -29,14 +29,18 @@ function writeFile(value) {
 
 test('defaults match the spec', () => {
   const config = defaultConfig()
-  // No default subagentProvider: DSH already ships the official delegation
-  // tools, so binding our own tool to the same providers by default would
-  // duplicate them. Opting in stays possible through config.
-  assert.deepEqual(config.providers.claude, { enabled: true })
-  assert.deepEqual(config.providers.codex, { enabled: true })
+  // Two independent capabilities per provider:
+  //   enabled  — history browsing and import (the official seam has neither)
+  //   dispatch — this plugin acting as the delegation target (the official seam
+  //              does this better for agents it covers)
+  // Covered agents therefore keep enabled:true and default dispatch:false, so
+  // de-duplication does not delete working history features.
+  assert.deepEqual(config.providers.claude, { enabled: true, dispatch: false })
+  assert.deepEqual(config.providers.codex, { enabled: true, dispatch: false })
   assert.equal(config.providers.claude.subagentProvider, undefined)
-  assert.deepEqual(config.providers.opencode, { enabled: true })
-  assert.deepEqual(config.providers.zcode, { enabled: false, commandTemplate: '', resumeTemplate: '' })
+  assert.deepEqual(config.providers.opencode, { enabled: true, dispatch: false })
+  // zcode has no official route at all, so its wrapper stays the dispatch path.
+  assert.deepEqual(config.providers.zcode, { enabled: false, dispatch: true, commandTemplate: '', resumeTemplate: '' })
   assert.deepEqual(config.defaults, { timeoutMs: 300000, maxConcurrent: 3, defaultCwd: '' })
   assert.deepEqual(config.panel, { enabled: true })
   assert.equal(config.legacyConfigFile, true)
@@ -91,6 +95,7 @@ test('deep merge keeps sibling keys at every level', () => {
   const config = loadConfig({ providers: { zcode: { resumeTemplate: 'zcode -r {id}' } } }, { file })
   assert.deepEqual(config.providers.zcode, {
     enabled: false,
+    dispatch: true,
     commandTemplate: 'zcode -p {prompt}',
     resumeTemplate: 'zcode -r {id}',
   })

@@ -21,12 +21,20 @@ export function defaultConfig() {
   // duplicated them with opposite ergonomics (ours blocks, theirs returns an id)
   // and made two tools compete for one provider. They stay supported as an
   // opt-in for callers that specifically want this plugin to await the answer.
+  // `dispatch` defaults track official coverage (src/official-coverage.js):
+  // codex, claude and opencode all have an official route, so this plugin stops
+  // offering itself as their dispatch target and leaves that job to the official
+  // tools. Their `enabled` stays true because history browsing and import are
+  // capabilities the official seam does NOT provide — turning those off too
+  // would delete working features in the name of de-duplication.
+  // zcode is the exception: no official route exists, so its wrapper stays the
+  // only way to reach it, and it remains off until the user supplies a template.
   return {
     providers: {
-      claude: { enabled: true },
-      codex: { enabled: true },
-      opencode: { enabled: true },
-      zcode: { enabled: false, commandTemplate: '', resumeTemplate: '' },
+      claude: { enabled: true, dispatch: false },
+      codex: { enabled: true, dispatch: false },
+      opencode: { enabled: true, dispatch: false },
+      zcode: { enabled: false, dispatch: true, commandTemplate: '', resumeTemplate: '' },
     },
     defaults: {
       timeoutMs: 300000,
@@ -118,6 +126,11 @@ function validateLayer(layer, origin) {
       const key = 'providers.' + id
       if (!isPlainObject(entry)) invalid(key, 'an object', origin)
       if (entry.enabled !== undefined && typeof entry.enabled !== 'boolean') invalid(key + '.enabled', 'a boolean', origin)
+      // Dispatch and history are separate capabilities. An agent the official
+      // distribution already covers should stop being a DISPATCH target here,
+      // but its local session history is still only reachable through this
+      // plugin — one flag cannot say both.
+      if (entry.dispatch !== undefined && typeof entry.dispatch !== 'boolean') invalid(key + '.dispatch', 'a boolean', origin)
       if (entry.subagentProvider !== undefined && typeof entry.subagentProvider !== 'string') {
         invalid(key + '.subagentProvider', 'a string', origin)
       }
