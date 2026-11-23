@@ -42,6 +42,8 @@ window.__ModuleLoader__.load({
         'state.noRecent': '本进程里还没有派发记录。',
         'state.available': '可用',
         'state.unavailable': '不可用',
+        'state.official': '官方有更优路径',
+        'state.wrapperOnly': '仅本插件可达',
         'state.ok': '成功',
         'state.failed': '失败',
         'sessions.filter': '后端筛选',
@@ -149,6 +151,8 @@ window.__ModuleLoader__.load({
         'state.noRecent': 'No dispatch has been recorded in this process.',
         'state.available': 'Available',
         'state.unavailable': 'Unavailable',
+        'state.official': 'Official path exists',
+        'state.wrapperOnly': 'Wrapper-only',
         'state.ok': 'Succeeded',
         'state.failed': 'Failed',
         'sessions.filter': 'Provider filter',
@@ -583,8 +587,17 @@ window.__ModuleLoader__.load({
                   h('div', { className: 'aall_rowTitle' },
                     h('span', { className: 'aall_rowName' }, provider !== null && provider !== undefined && provider.label ? String(provider.label) : id),
                     h('span', { className: 'aall_mono aall_dim' }, id)),
-                  provider !== null && provider !== undefined && provider.detail ? h('div', { className: 'aall_rowSub' }, String(provider.detail)) : null),
+                  provider !== null && provider !== undefined && provider.detail ? h('div', { className: 'aall_rowSub' }, String(provider.detail)) : null,
+                  // The host reports whether an official path exists; the panel
+                  // showing only "available" made an officially-covered agent
+                  // look like a plain replacement for the official tool.
+                  provider !== null && provider !== undefined && typeof provider.prefer === 'string'
+                    ? h('div', { className: 'aall_rowSub aall_dim' }, String(provider.prefer))
+                    : null),
                 h('span', { className: 'aall_tag' }, dictLabel(t, 'kind.', provider === null || provider === undefined ? undefined : provider.kind)),
+                provider !== null && provider !== undefined && provider.official === true
+                  ? h('span', { className: 'aall_tag' }, t('state.official'))
+                  : null,
                 h('span', { className: available ? 'aall_ok' : 'aall_bad' }, available ? t('state.available') : t('state.unavailable')))
             }))),
         h('section', { className: 'aall_section' },

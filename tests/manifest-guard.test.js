@@ -190,3 +190,37 @@ test('the ACP documentation names both opencode architectures separately', async
   assert.match(readme, /mcpCapabilities\.sse/, 'the sse capability difference must be stated')
   assert.match(readme, /additionalDirectories/, 'the added session capability must be stated')
 })
+
+test('the panel consumes the official-coverage fields the host reports', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const root = new URL('..', import.meta.url).pathname
+  const client = readFileSync(join(root, 'client.js'), 'utf8')
+
+  // The host added `official` and `prefer` to /state; a panel that renders only
+  // `available` shows an officially-covered agent as a plain replacement for the
+  // official tool, which is the duplication this round removed.
+  assert.match(client, /provider\.official === true/, 'the panel must render the coverage flag')
+  assert.match(client, /provider\.prefer/, 'the panel must render the preference guidance')
+  assert.match(client, /'state\.official'/, 'the coverage label must be localized')
+})
+
+test('every client locale key exists in both languages', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const root = new URL('..', import.meta.url).pathname
+  const client = readFileSync(join(root, 'client.js'), 'utf8')
+  const zhBlock = client.slice(client.indexOf('zh:'), client.indexOf('en:'))
+  // The English block runs to the closing brace of the dictionary object, which
+  // is the LAST closing brace before the next top-level statement — slicing at
+  // the first '}' cut the block short and reported genuinely present keys as
+  // missing. Anchoring on the next declaration is the reliable boundary.
+  const enStart = client.indexOf('en:')
+  const enEnd = client.indexOf('\n    }', enStart)
+  const enBlock = enEnd === -1 ? client.slice(enStart) : client.slice(enStart, enEnd)
+  const keys = (block) => new Set([...block.matchAll(/'([a-zA-Z][^']*?)'[:\s]/g)].map((m) => m[1]))
+  for (const key of keys(zhBlock)) {
+    if (!key.includes('.')) continue
+    assert.ok(keys(enBlock).has(key), 'locale key ' + key + ' is missing from the English dictionary')
+  }
+})
