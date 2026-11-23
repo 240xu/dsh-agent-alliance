@@ -224,3 +224,17 @@ test('every client locale key exists in both languages', async () => {
     assert.ok(keys(enBlock).has(key), 'locale key ' + key + ' is missing from the English dictionary')
   }
 })
+
+test('the docs warn that ACP permission does not gate opencode', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join } = import.meta.url ? await import('node:path') : {}
+  const root = new URL('..', import.meta.url).pathname
+  const readme = readFileSync(join(root, 'README.md'), 'utf8')
+
+  // The ACP config block is the natural place a user looks for a safety switch.
+  // `permission: 'reject'` reads like a sandbox but opencode never sends a
+  // permission request, so the doc must say so next to that config.
+  assert.match(readme, /permission` 对 opencode 无效/, 'the README must warn that permission is inert for opencode')
+  assert.match(readme, /没有任何审批环节/, 'the README must state there is no approval step')
+  assert.match(readme, /C5-acp-permission\.md/, 'the README must link the evidence')
+})

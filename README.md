@@ -219,6 +219,7 @@ DeepSeek Harness **扩展插件**：把 **Claude Code / Codex / OpenCode / ZCode
     providerName: 'opencode'
     command: '/path/to/opencode-ai/bin/opencode.exe'
     args: ['acp']
+    # 注意：permission 对 opencode 无效（见下）
 
 # v2
 - id: subagent-acp
@@ -231,6 +232,12 @@ DeepSeek Harness **扩展插件**：把 **Claude Code / Codex / OpenCode / ZCode
 
 **这两个配置都需要进程环境里有可用代理**，否则 `session/prompt` 会超时——
 实测同一个二进制换代理就从不返回变成 5–12 秒返回，所以这不是可选项。
+
+> ⚠️ **`permission` 对 opencode 无效**。官方 `subagent-acp` 的 `permission: 'allow'|'reject'`
+> 只在子 agent 主动发 `session/requestPermission` 时起作用，而 opencode **一次都不发**
+> （实测 build / plan 两种模式下都是 0 个请求，文件照样写出来）。
+> 所以把 opencode 接进官方 ACP 时，**它会在 cwd 里读写文件且没有任何审批环节**。
+> 详见 [docs/audit5/C5-acp-permission.md](docs/audit5/C5-acp-permission.md)。
 
 **但两条路是并存而非二选一**，因为官方 ACP provider 的能力边界是：
 `agentOptions:false`（不能指定 model）、`outputSchema:false`、`inheritsParentContext:false`
