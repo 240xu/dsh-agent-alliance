@@ -154,18 +154,25 @@ DeepSeek Harness **扩展插件**：把 **Claude Code / Codex / OpenCode / ZCode
 - id: agent-alliance
   config:
     providers:
-      # 默认不带 subagentProvider：官方工具已经覆盖那部分能力。
-      # 需要本插件的同步语义去驱动官方 backend 时再显式打开（见上文）。
-      claude:   { enabled: true }
-      codex:    { enabled: true }
-      opencode: { enabled: true }
-      zcode:    { enabled: false, commandTemplate: '', resumeTemplate: '' }
+      # 两个能力是分开的：
+      #   enabled  —— 历史会话浏览 + 导入（官方没有这两项）
+      #   dispatch —— 本插件是否充当该家的派发目标（官方对已覆盖的家做得更好）
+      # 所以已覆盖的三家保留 enabled、默认 dispatch:false；
+      # 想恢复用本插件派发它们，显式写 dispatch: true。
+      claude:   { enabled: true,  dispatch: false }
+      codex:    { enabled: true,  dispatch: false }
+      opencode: { enabled: true,  dispatch: false }
+      zcode:    { enabled: false, dispatch: true, commandTemplate: '', resumeTemplate: '' }
     defaults: { timeoutMs: 300000, maxConcurrent: 3, defaultCwd: '' }
     panel: { enabled: true }
     legacyConfigFile: true
 ```
 
 - `subagentProvider` **默认为空**（该家只走 CLI 包装层）；显式填写才启用官方 backend 路径
+- `dispatch: false` 会让 `agent_dispatch` 明确拒绝派发该家，并指出应改用的官方工具与覆盖开关；
+  **历史浏览与导入不受影响**——官方 seam 完全没有这两项能力，裁重复不能连带删掉它们
+- **升级注意**：默认值变了。以前依赖 `agent_dispatch` 派发 claude / codex / opencode 的用法，
+  需显式设置 `providers.<id>.dispatch = true` 才能继续
 
 ### 第三方 agent（opencode / zcode）如何"进官方"
 
