@@ -15,6 +15,8 @@ import { loadLedger, importOne, sourceKey } from './importer/persist.js'
 import { serviceOf } from './host.js';
 
 /** Cost and side-effect warning repeated in every tool description. */
+import { officialPreference } from './official-coverage.js'
+
 const COST_WARNING = 'This spends the target agent\'s quota and it may read or write files in its cwd; confirm before important work.'
 
 /**
@@ -350,6 +352,12 @@ export function registerTools(ctx, { resolver, registry, config, home, io }) {
       // Token accounting in DSH's own vocabulary, present only when the backend
       // reported it. Absence means "not reported", never "zero".
       ...(result?.usage === undefined ? {} : { usage: result.usage }),
+      // Advice travels with the ANSWER, not only with the panel: the model chose
+      // this wrapper and should learn that an official route exists for this
+      // agent, without that turning the successful call into an error.
+      ...(officialPreference(providerId) === undefined
+        ? {}
+        : { prefer: officialPreference(providerId) }),
     })
   }
 

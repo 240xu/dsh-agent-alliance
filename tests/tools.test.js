@@ -746,3 +746,33 @@ test('the roundtable description warns once about quota, not twice', async () =>
   // Dispatch still uses the shared warning verbatim.
   assert.match(dispatch, /the target agent's quota/)
 })
+
+test('a successful dispatch still tells the caller an official route exists', async () => {
+  const { registerTools } = await import('../src/tools.js')
+  const names = {}
+  for (const [providerId, expectPrefer] of [['codex', /subagent_codex/], ['zcode', undefined]]) {
+    const tools = []
+    registerTools(
+      { tools: { register: (def) => { tools.push(def); return () => {} } }, get: () => undefined },
+      { resolver: {
+          resolve: () => ({ id: providerId, kind: 'cli', async dispatch() { return { text: 'ok', backend: 'cli' } } }),
+          list: () => [{ id: providerId, label: providerId, kind: 'cli', available: true }],
+        },
+        registry: { list: () => [], get: () => ({}) },
+        config: { defaults: { timeoutMs: 1000, maxConcurrent: 1 } }, home: '/tmp' },
+    )
+    const dispatch = tools.find((t) => t.name === 'agent_dispatch')
+    const value = await dispatch.execute({ provider: providerId, prompt: 'x' }, { signal: new AbortController().signal })
+    if (expectPrefer === undefined) {
+      // zcode is covered by no official route, so there is nothing to prefer and
+      // the field must be absent rather than empty.
+      assert.equal('prefer' in value, false, providerId + ' must not carry a bogus preference')
+    } else {
+      // The call SUCCEEDS; the guidance is advice attached to the answer, never
+      // an error that would deny a caller the result it asked for.
+      assert.equal(value.text, 'ok')
+      assert.match(String(value.prefer), expectPrefer)
+    }
+    names[providerId] = value
+  }
+})

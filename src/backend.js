@@ -4,6 +4,8 @@
 import { limitDiagnostic } from './diagnostic.js'
 import { serviceOf } from './host.js';
 
+import { hasOfficialPath, officialPreference, OFFICIAL_COVERAGE } from './official-coverage.js'
+
 const OFFICIAL_DETAIL = 'official subagent provider'
 
 function isObject(value) {
@@ -409,6 +411,7 @@ export function createBackendResolver({ ctx, registry, config } = {}) {
           label: backendLabel(cli.found ? cli.provider : undefined, providerId),
           kind: 'subagent',
           available: true,
+          official: true,
           detail: OFFICIAL_DETAIL + ' "' + route.name + '"',
         })
         continue
@@ -428,11 +431,17 @@ export function createBackendResolver({ ctx, registry, config } = {}) {
             : 'configured but not registered on ctx.subagents (is the bundle enabled, and does its'
               + ' providerName match "' + wanted + '"? registered: '
               + (registered.length > 0 ? registered.join(', ') : 'none') + ')'
+        // `official` is a positive capability fact, not a warning: the caller
+        // can ask whether the official distribution already covers this agent
+        // without reading our README.
+        const preference = officialPreference(providerId)
         infos.push({
           id: providerId,
           label: backendLabel(cli.provider, providerId),
           kind: 'cli',
           available: true,
+          official: hasOfficialPath(providerId),
+          ...(preference === undefined ? {} : { prefer: preference }),
           ...(reason === undefined ? {} : { detail: OFFICIAL_DETAIL + ' "' + String(wanted) + '" ' + reason }),
         })
         continue
@@ -443,6 +452,7 @@ export function createBackendResolver({ ctx, registry, config } = {}) {
         label: providerId,
         kind: 'cli',
         available: false,
+        official: hasOfficialPath(providerId),
         detail: name === undefined
           ? 'no CLI provider registered'
           : 'no CLI provider registered; ' + OFFICIAL_DETAIL + ' "' + name + '" needs a live parent agent',
