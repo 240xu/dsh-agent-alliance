@@ -38,7 +38,12 @@ test('defaults match the spec', () => {
   assert.deepEqual(config.providers.claude, { enabled: true, dispatch: false })
   assert.deepEqual(config.providers.codex, { enabled: true, dispatch: false })
   assert.equal(config.providers.claude.subagentProvider, undefined)
-  assert.deepEqual(config.providers.opencode, { enabled: true, dispatch: false })
+  // opencode IS officially reachable (subagent-acp) but the route only works
+  // after the user writes the CLI path and args into a patch row, so the default
+  // keeps this plugin's wrapper instead of removing a working option for a route
+  // nobody configured yet. codex/claude need only one bundle switch, so their
+  // dispatch default is false.
+  assert.deepEqual(config.providers.opencode, { enabled: true, dispatch: true })
   // zcode has no official route at all, so its wrapper stays the dispatch path.
   assert.deepEqual(config.providers.zcode, { enabled: false, dispatch: true, commandTemplate: '', resumeTemplate: '' })
   assert.deepEqual(config.defaults, { timeoutMs: 300000, maxConcurrent: 3, defaultCwd: '' })

@@ -33,7 +33,12 @@ export function defaultConfig() {
     providers: {
       claude: { enabled: true, dispatch: false },
       codex: { enabled: true, dispatch: false },
-      opencode: { enabled: true, dispatch: false },
+      // opencode IS officially reachable (via subagent-acp) but only after the
+      // user writes the CLI path and args into a patch row. A route nobody has
+      // configured yet is not a reason to remove the working default, so unlike
+      // codex/claude this one keeps dispatch on; the panel reports the official
+      // option so the user can still choose it.
+      opencode: { enabled: true, dispatch: true },
       zcode: { enabled: false, dispatch: true, commandTemplate: '', resumeTemplate: '' },
     },
     defaults: {

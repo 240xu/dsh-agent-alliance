@@ -11,6 +11,13 @@
  * the name an official provider registers on `ctx.subagents` (which is what this
  * plugin would bind to only when a user opts in).
  * `null` means the official distribution has no path for that agent yet.
+ *
+ * `ready` separates "an official route exists" from "an official route exists
+ * with no extra wiring". Enabling a vendor bundle is one switch and the tool
+ * appears; the ACP route additionally needs the CLI's absolute path and args
+ * written into a patch row. That difference decides which default is least
+ * surprising: a user with only opencode installed gets nothing from a route
+ * they have not configured.
  * @module dsh-agent-alliance/official-coverage
  */
 
@@ -28,11 +35,13 @@ export const OFFICIAL_COVERAGE = Object.freeze({
     officialPath: 'subagent-codex bundle',
     officialTool: 'subagent_codex',
     officialProvider: 'codex',
+    ready: true,
   }),
   claude: Object.freeze({
     officialPath: 'subagent-claude-code bundle',
     officialTool: 'subagent_claude_code',
     officialProvider: 'claude-code',
+    ready: true,
   }),
   opencode: Object.freeze({
     // The official seam reaches any ACP-compatible agent through subagent-acp,
@@ -48,6 +57,7 @@ export const OFFICIAL_COVERAGE = Object.freeze({
     officialPath: null,
     officialTool: null,
     officialProvider: null,
+    ready: false,
     note: 'no official bundle and no verified ACP mode; the CLI wrapper is the only route',
   }),
 })
@@ -57,6 +67,19 @@ export const OFFICIAL_COVERAGE = Object.freeze({
  * @param {string} providerId external agent id
  * @returns {boolean} true when an official path exists
  */
+/**
+ * Whether the official route for an agent works with no extra configuration.
+ *
+ * `false` means an official route exists but the user must wire it (the ACP
+ * case) — so this plugin's wrapper is not redundant for that user yet.
+ * @param {string} providerId external agent id
+ * @returns {boolean} true when enabling one bundle is enough
+ */
+export function officialPathIsReady(providerId) {
+  const entry = OFFICIAL_COVERAGE[providerId]
+  return entry !== undefined && entry.officialPath !== null && entry.ready === true
+}
+
 export function hasOfficialPath(providerId) {
   const entry = OFFICIAL_COVERAGE[providerId]
   return entry !== undefined && entry.officialPath !== null

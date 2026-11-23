@@ -7,6 +7,7 @@ import assert from 'node:assert/strict'
 import {
   OFFICIAL_COVERAGE,
   hasOfficialPath,
+  officialPathIsReady,
   officialPreference,
   wrapperOnlyProviders,
 } from '../src/official-coverage.js'
@@ -80,4 +81,17 @@ test('resolver.list() reports coverage alongside availability', async () => {
   // bundle already covers, which is the duplication users cannot see.
   assert.equal(row.official, true)
   assert.match(String(row.prefer), /subagent_codex/)
+})
+
+test('"ready" separates one-switch official routes from ones needing wiring', () => {
+  // codex/claude: enable a bundle and the tool appears.
+  assert.equal(officialPathIsReady('codex'), true)
+  assert.equal(officialPathIsReady('claude'), true)
+  // opencode: the ACP route exists but needs the CLI path and args written into
+  // a patch row, so a user with only the CLI installed gets nothing from it yet.
+  assert.equal(officialPathIsReady('opencode'), false)
+  assert.equal(officialPathIsReady('zcode'), false)
+  // Coverage and readiness are different questions: opencode is covered but not
+  // ready, and conflating them is what made the default wrong the first time.
+  assert.equal(hasOfficialPath('opencode'), true)
 })
