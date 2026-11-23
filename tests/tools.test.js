@@ -776,3 +776,24 @@ test('a successful dispatch still tells the caller an official route exists', as
     names[providerId] = value
   }
 })
+
+test('the dispatch description tells the model which providers official already covers', async () => {
+  const { registerTools } = await import('../src/tools.js')
+  const tools = []
+  registerTools(
+    { tools: { register: (def) => { tools.push(def); return () => {} } }, get: () => undefined },
+    { resolver: { resolve: () => ({ kind: 'cli', async dispatch() { return { text: 'x', backend: 'cli' } } }), list: () => [] },
+      registry: { list: () => [], get: () => ({}) },
+      config: { defaults: { timeoutMs: 1000, maxConcurrent: 1 } }, home: '/tmp' },
+  )
+  const description = tools.find((t) => t.name === 'agent_dispatch').description
+  // The model picks a provider from this text alone; an undifferentiated list
+  // made it pick our wrapper for agents the official distribution already
+  // covers with better ergonomics.
+  assert.match(description, /subagent_codex/, 'codex must be attributed to the official tool')
+  assert.match(description, /subagent_claude_code/, 'claude must be attributed to the official tool')
+  assert.match(description, /subagent-acp/, 'opencode must be attributed to the official ACP route')
+  assert.match(description, /NO official route/, 'zcode must be named as the wrapper-only case')
+  // And it must not have lost the in-harness guidance.
+  assert.match(description, /subagent_fork/)
+})
