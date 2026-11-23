@@ -331,19 +331,6 @@ window.__ModuleLoader__.load({
 `
 
     // ── helpers ─────────────────────────────────────────────────────────────
-    /** Local dictionary fallback: the slot renderer normally supplies `t`. */
-    function localize(key, params) {
-      let language = 'en'
-      if (typeof document !== 'undefined' && document.documentElement !== null) {
-        const tag = String(document.documentElement.lang || '').toLowerCase()
-        if (tag.indexOf('zh') === 0) language = 'zh'
-      }
-      const template = DICT[language][key] === undefined ? DICT.en[key] : DICT[language][key]
-      if (typeof template !== 'string') return key
-      if (params === undefined || params === null) return template
-      return template.replace(/\{(\w+)\}/g, (match, name) => params[name] === undefined ? match : String(params[name]))
-    }
-
     function queryString(params) {
       const search = new URLSearchParams()
       for (const [key, value] of Object.entries(params)) {

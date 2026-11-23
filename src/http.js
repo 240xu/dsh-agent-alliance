@@ -25,14 +25,6 @@ const JOB_KIND = 'agent-alliance'
 const MAX_BODY_BYTES = 1024 * 1024
 
 /**
- * Resolve the connection trust admission result for one request, verbatim from
- * the plugin spec. Returns `undefined` when the request may proceed, otherwise
- * the HTTP status (401/403/503) refusing it.
- * @param {object} ctx plugin context
- * @param {object} req node:http request (only `headers` is read)
- * @returns {number|undefined} rejection status, or undefined when admitted
- */
-/**
  * Stable machine-readable failure codes served by the panel.
  *
  * These strings are part of the HTTP contract: `tests/http.test.js` asserts
@@ -47,11 +39,20 @@ const ERROR_CODES = Object.freeze({
   BAD_BODY: 'bad-body',
   MISSING_FIELD: 'missing-field',
   NOT_FOUND: 'not-found',
+  UNKNOWN_JOB: 'unknown-job',
   DISPATCH_FAILED: 'dispatch-failed',
   JOBS_UNAVAILABLE: 'jobs-unavailable',
   JOBS_REFUSED: 'jobs-refused',
 })
 
+/**
+ * Resolve the connection trust admission result for one request, verbatim from
+ * the plugin spec. Returns `undefined` when the request may proceed, otherwise
+ * the HTTP status (401/403/503) refusing it.
+ * @param {object} ctx plugin context
+ * @param {object} req node:http request (only `headers` is read)
+ * @returns {number|undefined} rejection status, or undefined when admitted
+ */
 function rejectionFor(ctx, req) {
   let connection
   try { connection = ctx.get('connection') } catch { connection = undefined }
@@ -160,12 +161,21 @@ function failure(status, message, code) {
 async function readBody(req) {
   const chunks = []
   let size = 0
+  let overflowed = false
   for await (const chunk of req) {
     size += chunk.length
-    if (size > MAX_BODY_BYTES) return undefined
-    chunks.push(chunk)
+    if (size > MAX_BODY_BYTES) {
+      // Keep draining instead of returning immediately. An unconsumed request
+      // stream leaves the socket unusable for reuse and can end the connection
+      // before the error JSON is delivered, so the client would see a reset
+      // rather than `bad-body`. Draining costs only the bytes the sender already
+      // committed to.
+      overflowed = true
+      continue
+    }
+    if (!overflowed) chunks.push(chunk)
   }
-  return Buffer.concat(chunks).toString('utf8')
+  return overflowed ? undefined : Buffer.concat(chunks).toString('utf8')
 }
 
 /**
@@ -582,7 +592,7 @@ export function registerHttp(webServer, { ctx, io, resolver, registry, config, h
     try {
       read = jobs.readAt(id, intParam(url, 'from', 0), undefined)
     } catch (error) {
-      throw failure(404, String(error?.message || error), 'unknown-job')
+      throw failure(404, String(error?.message || error), ERROR_CODES.UNKNOWN_JOB)
     }
     return {
       chunks: read.chunks,
@@ -603,7 +613,7 @@ export function registerHttp(webServer, { ctx, io, resolver, registry, config, h
     try {
       outcome = jobs.kill(id, undefined, String(body.value.reason ?? 'panel'))
     } catch (error) {
-      throw failure(404, String(error?.message || error), 'unknown-job')
+      throw failure(404, String(error?.message || error), ERROR_CODES.UNKNOWN_JOB)
     }
     return { outcome }
   }))

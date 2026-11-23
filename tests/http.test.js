@@ -784,3 +784,42 @@ test('a provider that cannot be scanned is reported instead of looking empty', a
   // The healthy provider's row still comes back.
   assert.equal(response.json.sessions.length, 1)
 })
+
+test('an oversized body is drained so the error envelope can be delivered', async () => {
+  const { webServer, routes } = mockWebServer()
+  registerHttp(webServer, options({ config: { defaults: { timeoutMs: 1000 }, panel: { enabled: true } } }))
+
+  // Multiple chunks, and a record of whether iteration reached the end. A
+  // single-chunk fake cannot distinguish "return early" from "keep draining",
+  // which is exactly how this test passed while the bug was live.
+  const CHUNK = Buffer.from('x'.repeat(512 * 1024))
+  let consumedAll = false
+  const req = {
+    method: 'POST',
+    url: ROUTE_PREFIX + '/dispatch',
+    headers: {},
+    async *[Symbol.asyncIterator]() {
+      yield CHUNK
+      yield CHUNK
+      yield CHUNK  // 1.5 MiB total, past the 1 MiB cap on the third chunk
+      consumedAll = true
+    },
+  }
+  const chunks = []
+  const res = {
+    statusCode: 0,
+    headers: {},
+    writeHead(status, headers) { this.statusCode = status; this.headers = headers ?? {} },
+    setHeader(name, value) { this.headers[name] = value },
+    end(chunk) { if (chunk !== undefined) chunks.push(Buffer.from(chunk)); this.done = true },
+  }
+  const route = routes.find((entry) => entry.path === ROUTE_PREFIX)
+  await route.handler(req, res)
+
+  // The socket must be fully read: an unconsumed request stream leaves it
+  // unusable and the client can see a reset instead of this JSON error.
+  assert.equal(consumedAll, true, 'the oversized body must be drained to the end')
+  assert.equal(res.statusCode, 400)
+  const json = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+  assert.equal(json.code, 'bad-body')
+})
