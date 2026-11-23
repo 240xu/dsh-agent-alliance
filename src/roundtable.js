@@ -116,10 +116,38 @@ export async function runRoundtable({ registry, prompt, providerIds, cwd, model,
     promptsByRound.push(entries
       .filter((entry) => typeof entry.promptSent === 'string')
       .map((entry) => ({ provider: entry.provider, prompt: entry.promptSent })))
+    // Report which members actually accounted for tokens. Only claude exposes
+    // usage today (codex prints one aggregate `tokens used: N`, which cannot be
+    // split into DSH's disjoint fields without inventing numbers), so a caller
+    // must be able to see that a round's cost is only PARTLY known rather than
+    // assume the total covers everyone.
+    const reportedBy = entries
+      .filter((entry) => entry.ok === true && entry.usage !== undefined)
+      .map((entry) => entry.provider)
+    const usageTotals = reportedBy.length === 0
+      ? undefined
+      : entries
+        .filter((entry) => entry.usage !== undefined)
+        .reduce((sum, entry) => {
+          sum.inputTokens += entry.usage.inputTokens
+          sum.outputTokens += entry.usage.outputTokens
+          if (entry.usage.cacheReadTokens !== undefined) {
+            sum.cacheReadTokens = (sum.cacheReadTokens ?? 0) + entry.usage.cacheReadTokens
+          }
+          if (entry.usage.cacheWriteTokens !== undefined) {
+            sum.cacheWriteTokens = (sum.cacheWriteTokens ?? 0) + entry.usage.cacheWriteTokens
+          }
+          return sum
+        }, { inputTokens: 0, outputTokens: 0 })
     debate.push({
       round: rn,
       entries,
       basePromptChars: base.length,
+      ...(usageTotals === undefined ? {} : { usageTotals }),
+      // DISJOINT counts are only additive within one provider across rounds.
+      // Summing a claude run with an opencode run would add two vendors' token
+      // vocabularies together, so the totals are labelled with who contributed.
+      ...(reportedBy.length === 0 ? {} : { usageReportedBy: reportedBy }),
       ...(rn === 1 ? {} : { previousPromptChars: promptsByRound[rn - 2].map((item) => item.prompt.length) }),
       prefixes: shared,
       strictPrefix: shared.every((item) => item.strictPrefix),

@@ -225,3 +225,45 @@ test('a failed member does not falsify the round-level prefix verdict', async ()
   assert.deepEqual(round2.prefixes.map((entry) => entry.provider), ['ok'])
   assert.equal(round2.vsPreviousRound[0].comparable, true)
 })
+
+test('a round reports who accounted for tokens, so a partial total is never mistaken for the whole', async () => {
+  const { runRoundtable } = await import('../src/roundtable.js')
+  // Only one member reports usage; the other succeeds without it. This is the
+  // real situation: claude exposes usage, codex prints a single aggregate that
+  // cannot be split into DSH's disjoint fields.
+  const registry = {
+    list: () => [{ id: 'withusage' }, { id: 'silent' }],
+    get: (id) => ({
+      id,
+      async dispatch({ prompt }) {
+        if (id === 'withusage') {
+          return { text: 'ok', usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 300, cacheWriteTokens: 10 } }
+        }
+        return { text: 'ok' }
+      },
+    }),
+  }
+  const result = await runRoundtable({ registry, prompt: 'Q', rounds: 1 })
+  const round = result.debate[0]
+
+  assert.deepEqual(round.usageReportedBy, ['withusage'])
+  assert.deepEqual(round.usageTotals, {
+    inputTokens: 100, outputTokens: 20, cacheReadTokens: 300, cacheWriteTokens: 10,
+  })
+  // The silent member contributed zero to the total, so a caller reading only
+  // usageTotals would under-count. usageReportedBy is the disclosure that makes
+  // the number honest.
+  assert.equal(round.usageTotals.inputTokens, 100)
+  assert.notEqual(round.usageReportedBy.length, result.debate[0].entries.filter((e) => e.ok).length)
+})
+
+test('a round where nobody reports usage carries no totals at all', async () => {
+  const { runRoundtable } = await import('../src/roundtable.js')
+  const registry = { list: () => [{ id: 'a' }], get: () => ({ id: 'a', async dispatch() { return { text: 'ok' } } }) }
+  const result = await runRoundtable({ registry, prompt: 'Q', rounds: 1 })
+  const round = result.debate[0]
+  // Absent must stay absent: a zeroed total would read as "this round cost
+  // nothing", which is a stronger and false claim.
+  assert.equal('usageTotals' in round, false)
+  assert.equal('usageReportedBy' in round, false)
+})
