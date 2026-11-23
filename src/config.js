@@ -43,6 +43,12 @@ export function defaultConfig() {
     },
     defaults: {
       timeoutMs: 300000,
+      // Per PLUGIN INSTANCE, not per Agent tree. Three Sessions sharing one
+      // loaded plugin get 3 slots total; the official subagent pool
+      // (`maxActiveSubagents`) instead counts per root Agent tree. These are
+      // different policies, and the official pool only applies to calls routed
+      // through ctx.subagents — this gate exists precisely because external CLI
+      // dispatch does not go through it.
       maxConcurrent: 3,
       defaultCwd: '',
     },

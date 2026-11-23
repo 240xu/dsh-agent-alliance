@@ -245,6 +245,9 @@ DeepSeek Harness **扩展插件**：把 **Claude Code / Codex / OpenCode / ZCode
 `resumeSessionId`、`model` 覆盖、以及会话历史浏览与导入。
 - `zcode` 走 `commandTemplate` 模板（`{prompt}` `{session}` `{cwd}`，单引号安全转义）
 - `maxConcurrent` 限制同时派发到外部 agent 的在飞数量；排队期间取消立即出队
+  **作用域是「每个插件实例」**，不是每个 Agent：三个 Session 共享同一个已加载插件时总共只有 3 个槽位。
+  官方 `maxActiveSubagents` 是「每个根 Agent 树」，两者是不同策略——而且官方池只作用于经
+  `ctx.subagents` 路由的调用，外部 CLI 派发不走那条链路，这正是本插件自己需要这道闸门的原因
 - 各家探测（**仅 CLI 路径**）：claude 经 grun；codex 绝对 node 入口；opencode 强制 TMPDIR 归一；
   宿主环境缺失时 runner 自动补 PATH/HOME/TMPDIR。官方后端使用包内自带的平台 payload，
   **不经过 grun 也不使用宿主 PATH 上的同名 CLI**。
